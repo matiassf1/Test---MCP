@@ -20,6 +20,8 @@ from src.tool_api import (
     get_repo_summary as _get_repo_summary,
     get_author_summary as _get_author_summary,
     get_multi_repo_summary as _get_multi_repo_summary,
+    batch_analyze_author as _batch_analyze_author,
+    batch_analyze_repo as _batch_analyze_repo,
 )
 
 _port = int(os.environ.get("MCP_PORT", os.environ.get("PORT", "8080")))
@@ -128,6 +130,57 @@ def get_multi_repo_summary(repos: list[str], since_days: int = 30) -> str:
     """
     summary = _get_multi_repo_summary(repos=repos, since_days=since_days)
     return _json(_summary_dict(summary))
+
+
+@mcp.tool()
+def batch_analyze_author(
+    author: str,
+    org: str,
+    since_days: int = 30,
+    limit: int = 20,
+    skip_existing: bool = True,
+) -> str:
+    """Discover and analyze all merged PRs by an author across an entire GitHub org.
+
+    Finds PRs via GitHub Search, runs the full analysis pipeline on each, and
+    persists results. Already-analyzed PRs are skipped by default.
+    Call get_author_summary or get_multi_repo_summary afterward to see aggregates.
+
+    Args:
+        author: GitHub username
+        org: GitHub organization name (e.g. FloQastInc)
+        since_days: How far back to search for merged PRs (default 30)
+        limit: Max PRs to analyze in this call (default 20, keep low to avoid timeouts)
+        skip_existing: Skip PRs already in storage (default True)
+    """
+    return _json(_batch_analyze_author(
+        author=author, org=org, since_days=since_days,
+        limit=limit, skip_existing=skip_existing,
+    ))
+
+
+@mcp.tool()
+def batch_analyze_repo(
+    repo: str,
+    since_days: int = 30,
+    limit: int = 20,
+    skip_existing: bool = True,
+) -> str:
+    """Discover and analyze all merged PRs in a single repository.
+
+    Fetches merged PRs since since_days ago, runs the full analysis pipeline on
+    each, and persists results. Call get_repo_summary afterward for aggregates.
+
+    Args:
+        repo: GitHub repository in org/name format
+        since_days: How far back to search (default 30)
+        limit: Max PRs to analyze in this call (default 20)
+        skip_existing: Skip PRs already in storage (default True)
+    """
+    return _json(_batch_analyze_repo(
+        repo=repo, since_days=since_days,
+        limit=limit, skip_existing=skip_existing,
+    ))
 
 
 # ---------------------------------------------------------------------------

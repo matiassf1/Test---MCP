@@ -162,3 +162,115 @@ def get_multi_repo_summary(
     filtered = [m for m in all_metrics if m.repo in repos]
     repo_label = ", ".join(sorted(repos))
     return engine.compute_team_summary(filtered, repo=repo_label, since_days=since_days)
+
+
+def batch_analyze_author(
+    author: str,
+    org: str,
+    since_days: int = 30,
+    limit: int = 20,
+    skip_existing: bool = True,
+    storage: Optional[StorageBackend] = None,
+) -> dict[str, Any]:
+    """Discover and analyze all merged PRs by *author* across every repo in *org*.
+
+    GitHub Search API is used to find PRs; each is then run through the full
+    analysis pipeline.  Already-analyzed PRs are skipped by default
+    (``skip_existing=True``) to avoid redundant API calls.
+
+    Returns a dict with:
+      - ``analyzed``   — list of {repo, pr, status} for PRs processed this run
+      - ``skipped``    — count of PRs already in storage
+      - ``failed``     — count of PRs that errored
+      - ``total_found``— total PRs found on GitHub
+    """
+    from src.github_service import GitHubService
+    from src.pr_analysis_pipeline import PRAnalysisPipeline
+
+    backend = storage or _default_storage()
+    existing_keys = {(m.repo, m.pr_number) for m in backend.load_all()}
+
+    try:
+        gh = GitHubService()
+        pr_refs = gh.get_merged_prs_by_author_org(
+            org=org, author=author, since_days=since_days, limit=limit
+        )
+    except Exception as e:
+        return {"error": str(e), "analyzed": [], "skipped": 0, "failed": 0, "total_found": 0}
+
+    analyzed = []
+    skipped = 0
+    failed = 0
+
+    pipeline = PRAnalysisPipeline(storage=backend)
+
+    for repo, pr_number in pr_refs:
+        if skip_existing and (repo, pr_number) in existing_keys:
+            skipped += 1
+            continue
+        try:
+            metrics = pipeline.analyze_pr(repo=repo, pr_number=pr_number)
+            pipeline.save(metrics)
+            analyzed.append({"repo": repo, "pr": pr_number, "status": "ok",
+                             "score": metrics.testing_quality_score})
+        except Exception as e:
+            failed += 1
+            analyzed.append({"repo": repo, "pr": pr_number, "status": "error", "error": str(e)})
+
+    return {
+        "total_found": len(prs),
+        "analyzed": analyzed,
+        "skipped": skipped,
+        "failed": failed,
+    }
+    return {
+        "total_found": len(pr_refs),
+        "analyzed": analyzed,
+        "skipped": skipped,
+        "failed": failed,
+    }
+
+
+def batch_analyze_repo(
+    repo: str,
+    since_days: int = 30,
+    limit: int = 20,
+    skip_existing: bool = True,
+    storage: Optional[StorageBackend] = None,
+) -> dict[str, Any]:
+    """Discover and analyze all merged PRs in a single *repo* since *since_days* ago.
+
+    Returns the same shape as ``batch_analyze_author``.
+    """
+    from src.github_service import GitHubService
+    from src.pr_analysis_pipeline import PRAnalysisPipeline
+
+    backend = storage or _default_storage()
+    existing_keys = {(m.repo, m.pr_number) for m in backend.load_all()}
+
+    try:
+        gh = GitHubService()
+        prs = gh.get_merged_prs_since(repo_name=repo, since_days=since_days)
+    except Exception as e:
+        return {"error": str(e), "analyzed": [], "skipped": 0, "failed": 0, "total_found": 0}
+
+    prs = prs[:limit]
+    analyzed = []
+    skipped = 0
+    failed = 0
+
+    pipeline = PRAnalysisPipeline(storage=backend)
+
+    for pr in prs:
+        pr_number = pr.number
+        if skip_existing and (repo, pr_number) in existing_keys:
+            skipped += 1
+            continue
+        try:
+            metrics = pipeline.analyze_pr(repo=repo, pr_number=pr_number)
+            pipeline.save(metrics)
+            analyzed.append({"repo": repo, "pr": pr_number, "status": "ok",
+                             "score": metrics.testing_quality_score})
+        except Exception as e:
+            failed += 1
+            analyzed.append({"repo": repo, "pr": pr_number, "status": "error", "error": str(e)})
