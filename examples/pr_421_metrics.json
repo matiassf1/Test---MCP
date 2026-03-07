@@ -1,0 +1,47 @@
+{
+  "pr_number": 421,
+  "author": "matias.fernandez",
+  "title": "[PAY-212] Refactor payment processor to support multi-currency",
+  "date": "2025-02-14T16:43:00+00:00",
+  "repo": "acme-org/payments-service",
+  "jira_ticket": "PAY-212",
+  "jira_issue": {
+    "key": "PAY-212",
+    "summary": "Refactor payment processor to support multi-currency",
+    "issue_type": "Story",
+    "status": "In Review",
+    "priority": "High",
+    "components": ["payments", "checkout"],
+    "labels": ["backend", "refactor"]
+  },
+  "code_metrics": {
+    "files_changed": 7,
+    "production_lines_added": 98,
+    "production_lines_modified": 134,
+    "test_lines_added": 61,
+    "test_code_ratio": 0.623
+  },
+  "coverage_metrics": {
+    "lines_modified": 134,
+    "lines_covered": 85,
+    "change_coverage_pct": 63.43,
+    "overall_coverage_pct": 74.2,
+    "changed_lines": 134,
+    "covered_changed_lines": 85,
+    "changed_lines_coverage_percent": 63.43
+  },
+  "quality": {
+    "testing_quality_score": 6.33,
+    "badge": "Good",
+    "test_code_ratio": 0.623
+  },
+  "test_metrics": {
+    "tests_added": 4,
+    "test_types": {
+      "unit": 2,
+      "integration": 1,
+      "e2e": 1,
+      "unknown": 0
+    }
+  }
+}

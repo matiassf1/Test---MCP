@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(claude-api)",
+      "Skill(claude-api:*)",
+      "Bash(set:*)",
+      "Bash(python analyze_change.py:*)",
+      "Bash(.venv/Scripts/pip show anthropic)",
+      "Bash(.venv/Scripts/python -c \":*)"
+    ]
+  }
+}

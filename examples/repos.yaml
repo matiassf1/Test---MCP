@@ -1,0 +1,9 @@
+# repos.yaml — list of repositories for multi-repo analysis
+#
+# Usage:
+#   python generate_summary.py --repos examples/repos.yaml --since 30d --fetch
+
+repos:
+  - acme-org/payments-service
+  - acme-org/auth-service
+  - acme-org/api-gateway

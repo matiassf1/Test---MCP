@@ -1,0 +1,104 @@
+{
+  "repo": "acme-org/payments-service",
+  "repos": ["acme-org/payments-service"],
+  "since_days": 30,
+  "prs_analyzed": 18,
+  "average_change_coverage_pct": 54.1,
+  "average_testing_quality_score": 5.48,
+  "total_tests_added": 32,
+  "test_type_distribution": {
+    "unit": 0.60,
+    "integration": 0.30,
+    "e2e": 0.10
+  },
+  "top_contributors": [
+    {
+      "author": "matias.fernandez",
+      "prs": 6,
+      "avg_change_coverage": 63.0,
+      "avg_testing_quality_score": 6.21,
+      "tests_added": 12
+    },
+    {
+      "author": "laura.gomez",
+      "prs": 5,
+      "avg_change_coverage": 58.0,
+      "avg_testing_quality_score": 5.74,
+      "tests_added": 9
+    },
+    {
+      "author": "carlos.ruiz",
+      "prs": 4,
+      "avg_change_coverage": 47.5,
+      "avg_testing_quality_score": 4.89,
+      "tests_added": 7
+    },
+    {
+      "author": "sofia.mendez",
+      "prs": 3,
+      "avg_change_coverage": 41.7,
+      "avg_testing_quality_score": 4.12,
+      "tests_added": 4
+    }
+  ],
+  "by_issue_type": {
+    "Story": 9,
+    "Bug": 6,
+    "Task": 3
+  },
+  "by_repo": {
+    "acme-org/payments-service": {
+      "prs": 18,
+      "avg_change_coverage_pct": 54.1,
+      "avg_testing_quality_score": 5.48,
+      "tests_added": 32
+    }
+  },
+  "coverage_trend": [
+    { "pr_number": 405, "repo": "acme-org/payments-service", "date": "2025-01-16T10:22:00+00:00", "change_coverage": 87.0, "testing_quality_score": 8.34, "author": "carlos.ruiz" },
+    { "pr_number": 408, "repo": "acme-org/payments-service", "date": "2025-01-19T14:05:00+00:00", "change_coverage": 61.0, "testing_quality_score": 5.92, "author": "laura.gomez" },
+    { "pr_number": 412, "repo": "acme-org/payments-service", "date": "2025-01-23T09:31:00+00:00", "change_coverage": 0.0,  "testing_quality_score": 0.0,  "author": "sofia.mendez" },
+    { "pr_number": 415, "repo": "acme-org/payments-service", "date": "2025-01-27T16:48:00+00:00", "change_coverage": 73.0, "testing_quality_score": 7.18, "author": "matias.fernandez" },
+    { "pr_number": 421, "repo": "acme-org/payments-service", "date": "2025-02-14T16:43:00+00:00", "change_coverage": 63.0, "testing_quality_score": 6.33, "author": "matias.fernandez" }
+  ],
+  "by_author": {
+    "matias.fernandez": {
+      "prs": 6,
+      "avg_change_coverage_pct": 63.0,
+      "avg_testing_quality_score": 6.21,
+      "tests_added": 12,
+      "lines_modified": 742
+    },
+    "laura.gomez": {
+      "prs": 5,
+      "avg_change_coverage_pct": 58.0,
+      "avg_testing_quality_score": 5.74,
+      "tests_added": 9,
+      "lines_modified": 581
+    },
+    "carlos.ruiz": {
+      "prs": 4,
+      "avg_change_coverage_pct": 47.5,
+      "avg_testing_quality_score": 4.89,
+      "tests_added": 7,
+      "lines_modified": 413
+    },
+    "sofia.mendez": {
+      "prs": 3,
+      "avg_change_coverage_pct": 41.7,
+      "avg_testing_quality_score": 4.12,
+      "tests_added": 4,
+      "lines_modified": 298
+    }
+  },
+  "prs": [
+    { "pr_number": 405, "author": "carlos.ruiz",        "date": "2025-01-16T10:22:00+00:00", "jira_ticket": "PAY-198", "jira_issue_type": "Bug",   "lines_modified": 23,  "change_coverage_pct": 87.0, "testing_quality_score": 8.34, "tests_added": 2 },
+    { "pr_number": 408, "author": "laura.gomez",         "date": "2025-01-19T14:05:00+00:00", "jira_ticket": "PAY-201", "jira_issue_type": "Story", "lines_modified": 114, "change_coverage_pct": 61.0, "testing_quality_score": 5.92, "tests_added": 3 },
+    { "pr_number": 412, "author": "sofia.mendez",        "date": "2025-01-23T09:31:00+00:00", "jira_ticket": null,      "jira_issue_type": null,    "lines_modified": 67,  "change_coverage_pct": 0.0,  "testing_quality_score": 0.0,  "tests_added": 0 },
+    { "pr_number": 415, "author": "matias.fernandez",    "date": "2025-01-27T16:48:00+00:00", "jira_ticket": "PAY-207", "jira_issue_type": "Bug",   "lines_modified": 41,  "change_coverage_pct": 73.0, "testing_quality_score": 7.18, "tests_added": 2 },
+    { "pr_number": 418, "author": "carlos.ruiz",         "date": "2025-02-03T11:10:00+00:00", "jira_ticket": "PAY-209", "jira_issue_type": "Task",  "lines_modified": 89,  "change_coverage_pct": 45.0, "testing_quality_score": 4.12, "tests_added": 1 },
+    { "pr_number": 421, "author": "matias.fernandez",    "date": "2025-02-14T16:43:00+00:00", "jira_ticket": "PAY-212", "jira_issue_type": "Story", "lines_modified": 134, "change_coverage_pct": 63.0, "testing_quality_score": 6.33, "tests_added": 4 },
+    { "pr_number": 424, "author": "laura.gomez",         "date": "2025-02-18T09:55:00+00:00", "jira_ticket": "PAY-214", "jira_issue_type": "Story", "lines_modified": 203, "change_coverage_pct": 52.0, "testing_quality_score": 5.44, "tests_added": 4 },
+    { "pr_number": 427, "author": "sofia.mendez",        "date": "2025-02-21T14:27:00+00:00", "jira_ticket": "PAY-216", "jira_issue_type": "Bug",   "lines_modified": 31,  "change_coverage_pct": 58.0, "testing_quality_score": 5.68, "tests_added": 1 }
+  ]
+}
