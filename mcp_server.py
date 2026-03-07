@@ -8,210 +8,41 @@ Remote (HTTP/SSE) — for shared team access (Railway, Render, Fly.io):
 """
 from __future__ import annotations
 
+import json
 import os
-from typing import Any
+from typing import Any, Optional
 
-from mcp.server import Server
-from mcp.server.models import InitializationOptions
-from mcp.types import Tool, TextContent
+from mcp.server.fastmcp import FastMCP
 
 from src.tool_api import (
-    analyze_pr,
-    get_pr_metrics,
-    get_repo_summary,
-    get_author_summary,
-    get_multi_repo_summary,
+    analyze_pr as _analyze_pr,
+    get_pr_metrics as _get_pr_metrics,
+    get_repo_summary as _get_repo_summary,
+    get_author_summary as _get_author_summary,
+    get_multi_repo_summary as _get_multi_repo_summary,
 )
 
-
-app = Server("pr-analysis")
-
-
-# ---------------------------------------------------------------------------
-# Tool definitions
-# ---------------------------------------------------------------------------
-
-@app.list_tools()
-async def list_tools() -> list[Tool]:
-    return [
-        Tool(
-            name="analyze_pr",
-            description=(
-                "Fetch a GitHub PR, run the full analysis pipeline (test quality, "
-                "coverage estimate, Jira link), persist metrics, and return a summary. "
-                "Use this the first time you analyze a PR, or to refresh stale data."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "repo": {
-                        "type": "string",
-                        "description": "GitHub repository in org/name format, e.g. FloQastInc/reconciliations_lambdas",
-                    },
-                    "pr": {
-                        "type": "integer",
-                        "description": "Pull Request number",
-                    },
-                    "repo_path": {
-                        "type": "string",
-                        "description": (
-                            "Optional absolute path to a local checkout of the repo. "
-                            "When provided, Jest is run to compute mechanical coverage."
-                        ),
-                    },
-                },
-                "required": ["repo", "pr"],
-            },
-        ),
-        Tool(
-            name="get_pr_metrics",
-            description=(
-                "Load previously computed metrics for a PR from local storage. "
-                "Returns null if the PR has not been analyzed yet."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "repo": {"type": "string", "description": "org/name"},
-                    "pr": {"type": "integer", "description": "PR number"},
-                },
-                "required": ["repo", "pr"],
-            },
-        ),
-        Tool(
-            name="get_repo_summary",
-            description=(
-                "Return aggregate testing-quality statistics for a repository: "
-                "average coverage, average quality score, top contributors, trend."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "repo": {"type": "string", "description": "org/name"},
-                    "since_days": {
-                        "type": "integer",
-                        "description": "How many days back to include (default 30)",
-                        "default": 30,
-                    },
-                },
-                "required": ["repo"],
-            },
-        ),
-        Tool(
-            name="get_author_summary",
-            description=(
-                "Return aggregate stats for a single author across all analyzed PRs: "
-                "PR count, repos, avg coverage, avg quality score, tests added."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "author": {
-                        "type": "string",
-                        "description": "GitHub username (exact, as it appears in PRs)",
-                    },
-                },
-                "required": ["author"],
-            },
-        ),
-        Tool(
-            name="get_multi_repo_summary",
-            description=(
-                "Return a combined summary across multiple repositories. "
-                "Useful for org-wide dashboards."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "repos": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "List of org/name repos to include",
-                    },
-                    "since_days": {
-                        "type": "integer",
-                        "description": "How many days back to include (default 30)",
-                        "default": 30,
-                    },
-                },
-                "required": ["repos"],
-            },
-        ),
-    ]
+mcp = FastMCP("pr-analysis")
 
 
 # ---------------------------------------------------------------------------
-# Tool call handler
+# Helpers
 # ---------------------------------------------------------------------------
 
-@app.call_tool()
-async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-    import json
-
-    try:
-        result = _dispatch(name, arguments)
-        text = json.dumps(result, default=_json_default, indent=2)
-    except Exception as exc:
-        text = json.dumps({"error": str(exc)})
-
-    return [TextContent(type="text", text=text)]
-
-
-def _dispatch(name: str, args: dict[str, Any]) -> Any:
-    if name == "analyze_pr":
-        metrics = analyze_pr(
-            repo=args["repo"],
-            pr=int(args["pr"]),
-            repo_path=args.get("repo_path"),
-        )
-        if metrics is None:
-            return {"error": "Analysis failed — check GITHUB_TOKEN and repo/PR number"}
-        return _metrics_to_dict(metrics)
-
-    if name == "get_pr_metrics":
-        metrics = get_pr_metrics(repo=args["repo"], pr=int(args["pr"]))
-        if metrics is None:
-            return {"error": "No metrics found. Run analyze_pr first."}
-        return _metrics_to_dict(metrics)
-
-    if name == "get_repo_summary":
-        summary = get_repo_summary(
-            repo=args["repo"],
-            since_days=int(args.get("since_days", 30)),
-        )
-        return _summary_to_dict(summary)
-
-    if name == "get_author_summary":
-        return get_author_summary(author=args["author"])
-
-    if name == "get_multi_repo_summary":
-        summary = get_multi_repo_summary(
-            repos=args["repos"],
-            since_days=int(args.get("since_days", 30)),
-        )
-        return _summary_to_dict(summary)
-
-    raise ValueError(f"Unknown tool: {name}")
+def _json(obj: Any) -> str:
+    def _default(o):
+        from datetime import datetime
+        if isinstance(o, datetime):
+            return o.isoformat()
+        try:
+            return o.model_dump()
+        except AttributeError:
+            return str(o)
+    return json.dumps(obj, default=_default, indent=2)
 
 
-# ---------------------------------------------------------------------------
-# Serialisation helpers
-# ---------------------------------------------------------------------------
-
-def _json_default(obj: Any) -> Any:
-    """Fallback serializer for types json.dumps can't handle."""
-    from datetime import datetime
-    if isinstance(obj, datetime):
-        return obj.isoformat()
-    try:
-        return obj.model_dump()
-    except AttributeError:
-        return str(obj)
-
-
-def _metrics_to_dict(metrics) -> dict:
+def _metrics_dict(metrics) -> dict:
     d = metrics.model_dump(exclude={"file_changes", "test_files"})
-    # Summarise file list without bloating the response
     d["files_summary"] = [
         {"file": fc.filename, "status": fc.status, "additions": fc.additions}
         for fc in (metrics.file_changes or [])
@@ -219,74 +50,95 @@ def _metrics_to_dict(metrics) -> dict:
     return d
 
 
-def _summary_to_dict(summary) -> dict:
+def _summary_dict(summary) -> dict:
     return summary.model_dump(exclude={"pr_metrics", "by_author"})
+
+
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def analyze_pr(
+    repo: str,
+    pr: int,
+    repo_path: Optional[str] = None,
+) -> str:
+    """Fetch a GitHub PR, run the full analysis pipeline (test quality, LLM coverage
+    estimate, Jira link), persist metrics, and return a JSON summary.
+
+    Args:
+        repo: GitHub repository in org/name format, e.g. FloQastInc/reconciliations_lambdas
+        pr: Pull Request number
+        repo_path: Optional absolute path to a local checkout. When provided, Jest
+                   runs to compute mechanical coverage for changed JS/TS files.
+    """
+    metrics = _analyze_pr(repo=repo, pr=pr, repo_path=repo_path)
+    if metrics is None:
+        return _json({"error": "Analysis failed — check GITHUB_TOKEN and repo/PR number"})
+    return _json(_metrics_dict(metrics))
+
+
+@mcp.tool()
+def get_pr_metrics(repo: str, pr: int) -> str:
+    """Load previously computed metrics for a PR from local storage.
+
+    Args:
+        repo: GitHub repository in org/name format
+        pr: Pull Request number
+    """
+    metrics = _get_pr_metrics(repo=repo, pr=pr)
+    if metrics is None:
+        return _json({"error": "No metrics found. Run analyze_pr first."})
+    return _json(_metrics_dict(metrics))
+
+
+@mcp.tool()
+def get_repo_summary(repo: str, since_days: int = 30) -> str:
+    """Return aggregate testing-quality stats for a repository: average coverage,
+    average quality score, top contributors, trend over time.
+
+    Args:
+        repo: GitHub repository in org/name format
+        since_days: How many days back to include (default 30)
+    """
+    summary = _get_repo_summary(repo=repo, since_days=since_days)
+    return _json(_summary_dict(summary))
+
+
+@mcp.tool()
+def get_author_summary(author: str) -> str:
+    """Return aggregate stats for a single author across all analyzed PRs:
+    PR count, repos, avg coverage, avg quality score, total tests added.
+
+    Args:
+        author: GitHub username exactly as it appears in PRs
+    """
+    return _json(_get_author_summary(author=author))
+
+
+@mcp.tool()
+def get_multi_repo_summary(repos: list[str], since_days: int = 30) -> str:
+    """Return a combined testing-quality summary across multiple repositories.
+
+    Args:
+        repos: List of repositories in org/name format
+        since_days: How many days back to include (default 30)
+    """
+    summary = _get_multi_repo_summary(repos=repos, since_days=since_days)
+    return _json(_summary_dict(summary))
 
 
 # ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+if __name__ == "__main__":
     transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
+    port = int(os.environ.get("MCP_PORT", "8080"))
 
     if transport == "sse":
-        # HTTP/SSE for remote hosting
-        import uvicorn
-        from mcp.server.sse import SseServerTransport
-        from starlette.applications import Starlette
-        from starlette.routing import Route, Mount
-
-        sse = SseServerTransport("/messages")
-
-        async def handle_sse(request):
-            async with sse.connect_sse(
-                request.scope, request.receive, request._send
-            ) as streams:
-                await app.run(
-                    streams[0], streams[1],
-                    InitializationOptions(
-                        server_name="pr-analysis",
-                        server_version="1.0.0",
-                        capabilities=app.get_capabilities(
-                            notification_options=None,
-                            experimental_capabilities={},
-                        ),
-                    ),
-                )
-
-        starlette_app = Starlette(
-            routes=[
-                Route("/sse", endpoint=handle_sse),
-                Mount("/messages", app=sse.handle_post_message),
-            ]
-        )
-
-        port = int(os.environ.get("MCP_PORT", "8080"))
         print(f"Starting SSE MCP server on port {port}")
-        uvicorn.run(starlette_app, host="0.0.0.0", port=port)
-
+        mcp.run(transport="sse", host="0.0.0.0", port=port)
     else:
-        # stdio for local Cursor / Claude Desktop
-        import asyncio
-        from mcp.server.stdio import stdio_server
-
-        async def run():
-            async with stdio_server() as (read_stream, write_stream):
-                await app.run(
-                    read_stream, write_stream,
-                    InitializationOptions(
-                        server_name="pr-analysis",
-                        server_version="1.0.0",
-                        capabilities=app.get_capabilities(
-                            notification_options=None,
-                            experimental_capabilities={},
-                        ),
-                    ),
-                )
-
-        asyncio.run(run())
-
-
-if __name__ == "__main__":
-    main()
+        mcp.run(transport="stdio")
