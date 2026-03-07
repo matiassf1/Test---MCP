@@ -22,7 +22,8 @@ from src.tool_api import (
     get_multi_repo_summary as _get_multi_repo_summary,
 )
 
-mcp = FastMCP("pr-analysis")
+_port = int(os.environ.get("MCP_PORT", os.environ.get("PORT", "8080")))
+mcp = FastMCP("pr-analysis", host="0.0.0.0", port=_port)
 
 
 # ---------------------------------------------------------------------------
@@ -135,10 +136,9 @@ def get_multi_repo_summary(repos: list[str], since_days: int = 30) -> str:
 
 if __name__ == "__main__":
     transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
-    port = int(os.environ.get("MCP_PORT", "8080"))
 
     if transport == "sse":
-        print(f"Starting SSE MCP server on port {port}")
-        mcp.run(transport="sse", host="0.0.0.0", port=port)
+        print(f"Starting SSE MCP server on port {_port}")
+        mcp.run(transport="sse")
     else:
         mcp.run(transport="stdio")
