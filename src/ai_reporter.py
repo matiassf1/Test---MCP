@@ -136,9 +136,14 @@ def _build_prompt(m: PRMetrics) -> str:
     return "\n".join(lines)
 
 
+# This prompt drives llm_estimated_coverage (0-100), which feeds testing_quality_score when
+# change_coverage is 0. The narrative report uses _SYSTEM_PROMPT above and does not affect the score.
 _COVERAGE_SYSTEM = (
-    "You are a code coverage analyst. You must respond with ONLY a single integer between 0 and 100. "
-    "No explanation, no text, no punctuation — just the number."
+    "You are a code coverage analyst for FloQast. Estimate what percentage (0-100) of the "
+    "changed production code is meaningfully exercised by tests — not just touched, but with "
+    "real assertions and behavior validation (per FloQast: meaningful tests over coverage inflation). "
+    "Consider: True Unit / Component (RTL) / integration tests; avoid counting superficial or "
+    "implementation-coupled tests. Respond with ONLY a single integer 0-100. No other text."
 )
 
 
@@ -176,8 +181,9 @@ def _build_coverage_prompt(m: PRMetrics) -> str:
         lines.append("\n## Test diffs\nNone.")
 
     lines.append(
-        "\nEstimate: what percentage (0-100) of the changed production code is exercised "
-        "by the test code in this PR? Reply with only the integer."
+        "\nEstimate: what percentage (0-100) of the changed production code is meaningfully "
+        "exercised by tests (real assertions, behavior validation; not superficial coverage)? "
+        "Reply with only the integer."
     )
     return "\n".join(lines)
 

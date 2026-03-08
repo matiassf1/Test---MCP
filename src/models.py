@@ -81,6 +81,16 @@ class AuthorStats(BaseModel):
     lines_modified: int = 0
 
 
+class AIAnalysis(BaseModel):
+    """Result of AIAnalyzer (Claude) qualitative assessment of PR test quality."""
+
+    assessment: str = ""
+    untested_areas: list[str] = Field(default_factory=list)
+    suggestions: list[str] = Field(default_factory=list)
+    ai_quality_score: float = 0.0  # 0–10
+    reasoning: str = ""
+
+
 class PRMetrics(BaseModel):
     pr_number: int
     author: str
@@ -127,6 +137,8 @@ class PRMetrics(BaseModel):
     # LLM-inferred coverage (0.0–1.0) — Ollama reads actual diffs and estimates a percentage
     # Only populated when AI_ENABLED=true and mechanical CI coverage is unavailable
     llm_estimated_coverage: Optional[float] = None
+    # Qualitative 0–10 score from AIAnalyzer (Claude, FloQast-aligned); used to blend with formula score
+    llm_quality_score: Optional[float] = None
 
 
 class TeamSummary(BaseModel):

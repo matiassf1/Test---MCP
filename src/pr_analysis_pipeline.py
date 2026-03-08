@@ -176,14 +176,19 @@ class PRAnalysisPipeline:
         metrics.ai_estimated_coverage = diff_coverage
         self.timings["metrics"] = (time.perf_counter() - t) * 1000
 
-        # ---- 6. Ollama AI report + coverage estimate (requires AI_ENABLED=true in .env) ---
+        # ---- 6. AI report (narrative) + LLM coverage estimate (requires AI_ENABLED=true) ----
+        # - ai_report: free-form markdown from try_generate_report (FloQast-aligned prompt).
+        #   Returned in analyze_pr / get_pr_metrics as "ai_report"; NOT in batch_analyze_author / get_author_summary.
+        # - testing_quality_score: formula in _compute_testing_quality_score(); when change_coverage==0
+        #   it uses llm_estimated_coverage (single 0-100 from try_estimate_coverage, different prompt).
+        #   So changing only the narrative prompt does not change the numeric score.
         t = time.perf_counter()
         from src.ai_reporter import try_generate_report, try_estimate_coverage
         from src.metrics_engine import _compute_testing_quality_score
         metrics.ai_report = try_generate_report(metrics)
         metrics.llm_estimated_coverage = try_estimate_coverage(metrics)
 
-        # Recompute quality score now that LLM coverage estimate is available
+        # Recompute quality score when we have LLM coverage and no CI coverage
         if metrics.llm_estimated_coverage is not None and metrics.change_coverage == 0.0:
             metrics.testing_quality_score = _compute_testing_quality_score(
                 change_coverage=metrics.change_coverage,
@@ -193,6 +198,18 @@ class PRAnalysisPipeline:
                 test_file_pairing_rate=metrics.test_file_pairing_rate,
                 llm_estimated_coverage=metrics.llm_estimated_coverage,
             )
+
+        # Optional: blend with qualitative LLM score (AIAnalyzer / Claude) when available
+        if metrics.has_testable_code:
+            from src.ai_analyzer import try_analyze
+            analysis, _ = try_analyze(metrics)
+            if analysis is not None and getattr(analysis, "ai_quality_score", None) is not None:
+                q = max(0.0, min(10.0, float(analysis.ai_quality_score)))
+                metrics.llm_quality_score = round(q, 2)
+                # Blend formula score with FloQast-aligned qualitative score (35% weight)
+                blended = 0.65 * metrics.testing_quality_score + 0.35 * metrics.llm_quality_score
+                metrics.testing_quality_score = round(min(max(blended, 0.0), 10.0), 2)
+
         self.timings["ollama"] = (time.perf_counter() - t) * 1000
 
         self.timings["total"] = (time.perf_counter() - t_total) * 1000
