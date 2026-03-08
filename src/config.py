@@ -13,10 +13,11 @@ class Settings(BaseSettings):
     local_repo_path: str = ""
     anthropic_api_key: str = ""
 
-    # AI reporter — OpenRouter (preferred) or Ollama (local fallback)
+    # AI reporter — OpenRouter (preferred) or Ollama (local fallback).
+    # AI runs when ai_enabled=True OR openrouter_api_key is set (no need for both).
     ai_enabled: bool = False
     ai_model: str = "llama3.1"                          # Ollama model name
-    openrouter_api_key: str = ""                         # set this to use OpenRouter instead
+    openrouter_api_key: str = ""                         # set this to enable report/coverage/quality via OpenRouter
     openrouter_model: str = "google/gemma-3-27b-it:free"  # free model; auto-falls back if rate-limited
 
     # External coverage providers (optional)

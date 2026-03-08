@@ -199,14 +199,18 @@ class PRAnalysisPipeline:
                 llm_estimated_coverage=metrics.llm_estimated_coverage,
             )
 
-        # Optional: blend with qualitative LLM score (AIAnalyzer / Claude) when available
+        # Optional: blend with qualitative LLM score — Anthropic (AIAnalyzer) or OpenRouter
         if metrics.has_testable_code:
             from src.ai_analyzer import try_analyze
+            from src.ai_reporter import try_quality_score_openrouter
+            q: Optional[float] = None
             analysis, _ = try_analyze(metrics)
             if analysis is not None and getattr(analysis, "ai_quality_score", None) is not None:
                 q = max(0.0, min(10.0, float(analysis.ai_quality_score)))
+            if q is None:
+                q = try_quality_score_openrouter(metrics)
+            if q is not None:
                 metrics.llm_quality_score = round(q, 2)
-                # Blend formula score with FloQast-aligned qualitative score (35% weight)
                 blended = 0.65 * metrics.testing_quality_score + 0.35 * metrics.llm_quality_score
                 metrics.testing_quality_score = round(min(max(blended, 0.0), 10.0), 2)
 

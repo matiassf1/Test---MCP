@@ -188,6 +188,58 @@ def _build_coverage_prompt(m: PRMetrics) -> str:
     return "\n".join(lines)
 
 
+# Prompt for OpenRouter-based 0–10 quality score (FloQast-aligned); used when Anthropic is not set.
+_QUALITY_SCORE_SYSTEM = (
+    "You are a senior engineer reviewing PR test quality (FloQast standards). "
+    "Return ONLY valid JSON with one key: {\"ai_quality_score\": <0-10>}. "
+    "Score: 0-3 critical gaps, 4-5 major paths missing, 6-7 minor gaps, 8-9 good, 10 comprehensive. "
+    "Consider meaningful tests, AAA, behavior-focused naming; not coverage inflation."
+)
+
+
+def _build_quality_score_prompt(m: PRMetrics) -> str:
+    """Minimal context for the quality-score LLM call (OpenRouter path)."""
+    lines = [
+        f"PR #{m.pr_number} [{m.repo}]: {m.title}",
+        f"Prod lines added: {m.production_lines_added}, test lines added: {m.test_lines_added}, ratio: {m.test_code_ratio:.2f}.",
+    ]
+    prod = [fc for fc in m.file_changes if not _is_generated(fc.filename) and not _is_test_file(fc.filename) and fc.status != "removed"]
+    test_f = [fc for fc in m.file_changes if not _is_generated(fc.filename) and _is_test_file(fc.filename)]
+    prod.sort(key=lambda fc: fc.additions, reverse=True)
+    for fc in prod[:3]:
+        lines.append(f"  {fc.filename} [+{fc.additions}]")
+    for fc in test_f[:3]:
+        lines.append(f"  {fc.filename} [+{fc.additions}]")
+    lines.append("Return only JSON: {\"ai_quality_score\": <0-10>}.")
+    return "\n".join(lines)
+
+
+def try_quality_score_openrouter(metrics: PRMetrics) -> Optional[float]:
+    """Get 0–10 quality score via OpenRouter/Ollama (same _call_llm as report/coverage). Use when Anthropic is not set."""
+    try:
+        if not _is_ai_enabled() or not metrics.has_testable_code:
+            return None
+        raw = _call_llm([
+            {"role": "system", "content": _QUALITY_SCORE_SYSTEM},
+            {"role": "user", "content": _build_quality_score_prompt(metrics)},
+        ]).strip()
+        import json
+        # Allow JSON wrapped in markdown code block
+        if "```" in raw:
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            if start >= 0 and end > start:
+                raw = raw[start:end]
+        data = json.loads(raw)
+        score = data.get("ai_quality_score")
+        if score is None:
+            return None
+        s = float(score)
+        return round(min(max(s, 0.0), 10.0), 2)
+    except Exception:
+        return None
+
+
 def _call_openrouter(model: str, api_key: str, messages: list[dict]) -> str:
     """Call OpenRouter's OpenAI-compatible API and return the response text."""
     from openai import OpenAI
@@ -301,12 +353,22 @@ class AIReporter:
 # Safe factory
 # ---------------------------------------------------------------------------
 
-def try_generate_report(metrics: PRMetrics) -> Optional[str]:
-    """Invoke AIReporter if enabled via config; return markdown string or None."""
+def _is_ai_enabled() -> bool:
+    """True when AI is available: AI_ENABLED=true or OPENROUTER_API_KEY set (OpenRouter path)."""
     try:
         from src.config import settings
+        return bool(
+            getattr(settings, "ai_enabled", False)
+            or getattr(settings, "openrouter_api_key", "")
+        )
+    except Exception:
+        return False
 
-        if not getattr(settings, "ai_enabled", False):
+
+def try_generate_report(metrics: PRMetrics) -> Optional[str]:
+    """Invoke AIReporter if enabled via config (AI_ENABLED or OPENROUTER_API_KEY); return markdown or None."""
+    try:
+        if not _is_ai_enabled():
             return None
         if not metrics.has_testable_code:
             return None  # Generated/config-only PR — no meaningful analysis possible
@@ -319,13 +381,11 @@ def try_generate_report(metrics: PRMetrics) -> Optional[str]:
 def try_estimate_coverage(metrics: PRMetrics) -> Optional[float]:
     """Ask the LLM to estimate a coverage % from the diffs when CI data is absent.
 
-    Returns a float 0.0–1.0, or None if AI is disabled / Ollama is unavailable.
-    Only runs when ``change_coverage == 0.0`` and the PR has testable code.
+    Returns a float 0.0–1.0, or None if AI is disabled / unavailable.
+    Runs when OPENROUTER_API_KEY (or AI_ENABLED) is set and ``change_coverage == 0.0``.
     """
     try:
-        from src.config import settings
-
-        if not getattr(settings, "ai_enabled", False):
+        if not _is_ai_enabled():
             return None
         if not metrics.has_testable_code:
             return None
