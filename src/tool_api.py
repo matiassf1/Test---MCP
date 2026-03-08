@@ -218,12 +218,6 @@ def batch_analyze_author(
             analyzed.append({"repo": repo, "pr": pr_number, "status": "error", "error": str(e)})
 
     return {
-        "total_found": len(prs),
-        "analyzed": analyzed,
-        "skipped": skipped,
-        "failed": failed,
-    }
-    return {
         "total_found": len(pr_refs),
         "analyzed": analyzed,
         "skipped": skipped,
