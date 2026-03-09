@@ -305,20 +305,27 @@ def _call_llm(messages: list[dict]) -> str:
       1. OpenRouter (OPENROUTER_API_KEY) — free models with auto-fallback chain
       2. Anthropic API (ANTHROPIC_API_KEY) — fallback if OpenRouter unavailable
       3. Ollama — local fallback
+
+    When using OpenRouter, waits openrouter_delay_seconds before each request to avoid 429 in batch.
     """
+    import time
     from src.config import settings
 
     if settings.openrouter_api_key:
+        delay = max(0.0, getattr(settings, "openrouter_delay_seconds", 2.0))
         api_key = settings.openrouter_api_key
         primary = settings.openrouter_model
-        # Build ordered list: configured model first, then fallbacks (deduplicated)
         candidates = [primary] + [m for m in _OPENROUTER_FALLBACKS if m != primary]
         last_err: Exception = RuntimeError("No OpenRouter model available")
         for model in candidates:
             try:
+                if delay > 0:
+                    time.sleep(delay)
                 return _call_openrouter(model, api_key, messages)
             except Exception as e:
                 last_err = e
+                if delay > 0:
+                    time.sleep(delay)  # back off before retry on same or next model
                 continue
         raise last_err
 
