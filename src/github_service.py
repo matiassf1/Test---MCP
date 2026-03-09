@@ -137,7 +137,8 @@ class GitHubService:
         if not repo and not org:
             return []
         scope = f"repo:{repo}" if repo else f"org:{org}"
-        query = f"{scope} type:pr is:merged {ticket_key}"
+        # Quote ticket key so GitHub finds exact mention in title/body (e.g. CLOSE-13348)
+        query = f'{scope} type:pr is:merged "{ticket_key}"'
         issues = self._client.search_issues(query, sort="updated", order="desc")
         results: list[tuple[str, int]] = []
         for issue in issues:

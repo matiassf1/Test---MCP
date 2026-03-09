@@ -164,6 +164,79 @@ def get_multi_repo_summary(
     return engine.compute_team_summary(filtered, repo=repo_label, since_days=since_days)
 
 
+def list_prs_by_jira_ticket(
+    ticket_key: str,
+    org: str,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """List merged PRs that mention the given Jira ticket (title, body, or branch).
+
+    Returns a dict with:
+      - ``prs`` — list of {repo, pr} for each PR found
+      - ``total`` — length of that list
+    Use with analyze_pr to process one-by-one, or analyze_pr_by_jira_ticket to analyze the first.
+    """
+    from src.github_service import GitHubService
+
+    try:
+        gh = GitHubService()
+        pr_refs = gh.get_prs_mentioning_ticket(ticket_key=ticket_key, org=org, limit=limit)
+        prs = [{"repo": repo, "pr": pr_number} for repo, pr_number in pr_refs]
+        return {"ticket": ticket_key, "prs": prs, "total": len(prs)}
+    except Exception as e:
+        return {"ticket": ticket_key, "error": str(e), "prs": [], "total": 0}
+
+
+def analyze_pr_by_jira_ticket(
+    ticket_key: str,
+    org: str,
+    pr_index: int = 0,
+    storage: Optional[StorageBackend] = None,
+) -> dict[str, Any]:
+    """Find merged PR(s) that mention the Jira ticket, analyze the one at pr_index (default first), and return metrics.
+
+    Returns the same shape as analyze_pr (metrics + files_summary + ai_report) in key ``metrics``,
+    plus ``repo`` and ``pr`` that were analyzed. If no PRs found: ``{ "error": "...", "ticket": "..." }``.
+    """
+    from src.github_service import GitHubService
+    from src.pr_analysis_pipeline import PRAnalysisPipeline
+
+    backend = storage or _default_storage()
+    try:
+        gh = GitHubService()
+        pr_refs = gh.get_prs_mentioning_ticket(ticket_key=ticket_key, org=org, limit=10)
+    except Exception as e:
+        return {"error": str(e), "ticket": ticket_key}
+
+    if not pr_refs:
+        return {"error": f"No merged PRs found for ticket {ticket_key} in org {org}", "ticket": ticket_key}
+
+    idx = max(0, min(pr_index, len(pr_refs) - 1))
+    repo, pr_number = pr_refs[idx]
+    pipeline = PRAnalysisPipeline(storage=backend)
+    try:
+        metrics = pipeline.analyze_pr(repo=repo, pr_number=pr_number)
+        pipeline.save(metrics)
+        return {
+            "ticket": ticket_key,
+            "repo": repo,
+            "pr": pr_number,
+            "metrics": _metrics_dict_for_ticket(metrics),
+        }
+    except Exception as e:
+        return {"error": str(e), "ticket": ticket_key, "repo": repo, "pr": pr_number}
+
+
+def _metrics_dict_for_ticket(metrics) -> dict:
+    """Same shape as _metrics_dict in MCP (for analyze_pr response)."""
+    d = metrics.model_dump(exclude={"file_changes", "test_files"})
+    d["files_summary"] = [
+        {"file": fc.filename, "status": fc.status, "additions": fc.additions}
+        for fc in (metrics.file_changes or [])
+    ]
+    return d
+
+
 def list_prs_by_author(
     author: str,
     org: str,

@@ -21,6 +21,8 @@ from src.tool_api import (
     get_author_summary as _get_author_summary,
     get_multi_repo_summary as _get_multi_repo_summary,
     list_prs_by_author as _list_prs_by_author,
+    list_prs_by_jira_ticket as _list_prs_by_jira_ticket,
+    analyze_pr_by_jira_ticket as _analyze_pr_by_jira_ticket,
     batch_analyze_author as _batch_analyze_author,
     batch_analyze_repo as _batch_analyze_repo,
 )
@@ -119,6 +121,44 @@ def get_author_summary(author: str) -> str:
         author: GitHub username exactly as it appears in PRs
     """
     return _json(_get_author_summary(author=author))
+
+
+@mcp.tool()
+def list_prs_by_jira_ticket(
+    ticket_key: str,
+    org: str,
+    limit: int = 20,
+) -> str:
+    """List merged PRs that mention the given Jira ticket (e.g. CLOSE-13348).
+
+    Search is by ticket key in PR title, body, or branch. Use analyze_pr_by_jira_ticket
+    to analyze the first (or chosen) PR without needing repo/number.
+
+    Args:
+        ticket_key: Jira ticket key (e.g. CLOSE-13348, FQ-1234)
+        org: GitHub organization (e.g. FloQastInc)
+        limit: Max PRs to return (default 20)
+    """
+    return _json(_list_prs_by_jira_ticket(ticket_key=ticket_key, org=org, limit=limit))
+
+
+@mcp.tool()
+def analyze_pr_by_jira_ticket(
+    ticket_key: str,
+    org: str,
+    pr_index: int = 0,
+) -> str:
+    """Find merged PR(s) for the Jira ticket, analyze one, and return full metrics + report.
+
+    Uses GitHub Search for the ticket key, then runs the same pipeline as analyze_pr
+    on the PR at pr_index (0 = most recent). No need to look up repo/PR number.
+
+    Args:
+        ticket_key: Jira ticket key (e.g. CLOSE-13348)
+        org: GitHub organization (e.g. FloQastInc)
+        pr_index: Which PR to analyze if several mention the ticket (0 = first/most recent)
+    """
+    return _json(_analyze_pr_by_jira_ticket(ticket_key=ticket_key, org=org, pr_index=pr_index))
 
 
 @mcp.tool()

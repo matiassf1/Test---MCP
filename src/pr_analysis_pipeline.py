@@ -215,6 +215,7 @@ class PRAnalysisPipeline:
                 q = try_quality_score_openrouter(metrics)
             if q is not None:
                 metrics.llm_quality_score = round(q, 2)
+                # Final score: 65% formula (coverage/ratio/pairing) + 35% LLM qualitative opinion
                 blended = 0.65 * metrics.testing_quality_score + 0.35 * metrics.llm_quality_score
                 metrics.testing_quality_score = round(min(max(blended, 0.0), 10.0), 2)
 
