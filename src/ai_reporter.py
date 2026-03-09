@@ -26,6 +26,10 @@ _SYSTEM_PROMPT = (
     "- Test imbalance: significant production logic added with very few meaningful tests\n"
     "- Implementation-detail coupling: tests that would break on refactor even when behavior is unchanged, or that assert on internal calls rather than observable behavior\n"
     "- Risk areas: parts of the change that could cause regressions but appear weakly tested\n\n"
+    "When testing is not required, do not penalize:\n"
+    "- PR only adds or updates a dependency on a well-tested library and introduces no new application logic to test.\n"
+    "- PR only touches auto-generated code (e.g. from protobuf, OpenAPI codegen, or other tested code generators).\n"
+    "In those cases, state clearly that no new tests are required and why; do not demand tests for library or generated code.\n\n"
     "Do NOT rely on metric numbers for coverage or test type counts — derive your judgment from reading the actual code.\n"
     "Be direct and critical when necessary. This report is for senior engineers and technical leads."
 )
@@ -143,7 +147,9 @@ _COVERAGE_SYSTEM = (
     "changed production code is meaningfully exercised by tests — not just touched, but with "
     "real assertions and behavior validation (per FloQast: meaningful tests over coverage inflation). "
     "Consider: True Unit / Component (RTL) / integration tests; avoid counting superficial or "
-    "implementation-coupled tests. Respond with ONLY a single integer 0-100. No other text."
+    "implementation-coupled tests. If the PR only adds a well-tested dependency or only touches "
+    "auto-generated code (protobuf, codegen), respond 100 (no new tests required). "
+    "Respond with ONLY a single integer 0-100. No other text."
 )
 
 
@@ -183,6 +189,7 @@ def _build_coverage_prompt(m: PRMetrics) -> str:
     lines.append(
         "\nEstimate: what percentage (0-100) of the changed production code is meaningfully "
         "exercised by tests (real assertions, behavior validation; not superficial coverage)? "
+        "If the change only adds a well-tested dependency or only touches auto-generated code, reply 100. "
         "Reply with only the integer."
     )
     return "\n".join(lines)
@@ -193,7 +200,8 @@ _QUALITY_SCORE_SYSTEM = (
     "You are a senior engineer reviewing PR test quality (FloQast standards). "
     "Return ONLY valid JSON with one key: {\"ai_quality_score\": <0-10>}. "
     "Score: 0-3 critical gaps, 4-5 major paths missing, 6-7 minor gaps, 8-9 good, 10 comprehensive. "
-    "Consider meaningful tests, AAA, behavior-focused naming; not coverage inflation."
+    "Consider meaningful tests, AAA, behavior-focused naming; not coverage inflation. "
+    "If the PR only consumes a well-tested library (no new logic) or only touches auto-generated code, give 8-10 (no new tests required)."
 )
 
 

@@ -49,6 +49,7 @@ Rules:
 - Judge only hand-written production code vs hand-written tests.
 - Name specific untested functions/classes; suggest concrete test cases (e.g. Arrange-Act-Assert, behavior-focused).
 - FloQast context: prefer True Unit / Component (RTL) / Component Integration tests; mock externals (APIs, React Query) not React core or components under test; tests should survive refactor when behavior is unchanged; meaningful assertions over coverage inflation.
+- Do not penalize when no testing is required: PR only consumes a well-tested library (no new app logic) or only touches auto-generated code from tested tools (protobuf, codegen). In those cases give 8–10 and state in assessment that no new tests are required.
 - Score 0–10: 0–3 critical gaps | 4–5 major paths missing | 6–7 minor gaps | 8–9 good | 10 comprehensive and aligned with org standards.
 
 Return ONLY valid JSON (no markdown):
