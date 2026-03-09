@@ -194,9 +194,14 @@ def _make_sse_wrapped_app():
     from starlette.responses import JSONResponse, Response
 
     def exception_handler(request, exc):
-        # anyio.ClosedResourceError when writer.send() on a closed SSE stream (client
-        # closed GET /sse or timeout before response was sent). Return 202 to avoid 500.
-        if type(exc).__name__ == "ClosedResourceError":
+        # Avoid 500 when client disconnects or times out; keep server up for next request.
+        name = type(exc).__name__
+        msg = str(exc).lower()
+        if name == "ClosedResourceError":
+            return Response(status_code=202, content=b"")
+        if name in ("TimeoutError", "CancelledError", "asyncio.CancelledError"):
+            return Response(status_code=202, content=b"")
+        if "timed out" in msg or "timeout" in msg or "cancelled" in msg or "requestresponder" in msg or "context manager" in msg:
             return Response(status_code=202, content=b"")
         raise exc
 
