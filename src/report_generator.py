@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from src.models import PRMetrics, TeamSummary
+from src.models import JiraIssue, PRMetrics, TeamSummary
 
 REPORTS_DIR = Path("reports")
 
@@ -18,6 +18,21 @@ def _score_badge(score: float) -> str:
     if score >= 4.0:
         return "Fair"
     return "Needs improvement"
+
+
+def _coverage_for_display(m: PRMetrics) -> float:
+    """Return coverage value 0.0–1.0 for reports: prefer AI estimate, fallback to mechanical."""
+    if m.llm_estimated_coverage is not None:
+        return m.llm_estimated_coverage
+    return m.change_coverage
+
+
+def _coverage_display_str(m: PRMetrics) -> str:
+    """Return coverage as string for report (e.g. '85%' or '—'); uses AI estimate when available."""
+    v = _coverage_for_display(m)
+    if v == 0.0 and m.llm_estimated_coverage is None and m.change_coverage == 0.0:
+        return "—"
+    return f"{v * 100:.0f}%"
 
 
 class ReportGenerator:
@@ -42,6 +57,128 @@ class ReportGenerator:
         )
 
         return md_path, json_path
+
+    # ------------------------------------------------------------------
+    # Epic report
+    # ------------------------------------------------------------------
+
+    def generate_epic_report(
+        self,
+        epic_key: str,
+        epic_issue: Optional[JiraIssue],
+        all_metrics: list[PRMetrics],
+        failed: int = 0,
+    ) -> Path:
+        """Write an epic summary report (markdown) and return the file path."""
+        REPORTS_DIR.mkdir(exist_ok=True)
+        md_path = REPORTS_DIR / f"epic_{epic_key}_report.md"
+        md_path.write_text(
+            self._epic_markdown(epic_key, epic_issue, all_metrics, failed),
+            encoding="utf-8",
+        )
+        return md_path
+
+    def _epic_markdown(
+        self,
+        epic_key: str,
+        epic_issue: Optional[JiraIssue],
+        all_metrics: list[PRMetrics],
+        failed: int = 0,
+    ) -> str:
+        total = len(all_metrics)
+        avg_score = round(sum(m.testing_quality_score for m in all_metrics) / total, 2) if total else 0.0
+        # Use AI-estimated coverage only (no mechanical/CI); average across PRs that have it
+        cov_values = [_coverage_for_display(m) for m in all_metrics]
+        avg_cov = sum(cov_values) / total if total else 0.0
+        total_tests = sum(m.tests_added for m in all_metrics)
+        badge = _score_badge(avg_score)
+        summary = epic_issue.summary if epic_issue else None
+
+        lines = [
+            f"# Epic {epic_key}",
+            "",
+            "## Resumen",
+            "",
+            "| Campo | Valor |",
+            "|-------|--------|",
+            f"| Epic | **{epic_key}** |",
+            f"| Summary | {summary or '—'} |",
+            f"| PRs analizados | {total} |",
+        ]
+        if failed:
+            lines.append(f"| PRs fallidos | {failed} |")
+        lines += [
+            f"| Avg Coverage (AI estimate) | {avg_cov * 100:.0f}% |",
+            f"| Avg Testing Quality Score | **{avg_score} / 10** ({badge}) |",
+            f"| Total tests añadidos | {total_tests} |",
+            "",
+            "---",
+            "",
+            "## Tabla de PRs",
+            "",
+            "| PR | Repo | Ticket | Coverage (AI) | Score | Tests |",
+            "|----|------|--------|---------------|-------|-------|",
+        ]
+        for m in sorted(all_metrics, key=lambda x: (x.repo, x.pr_number)):
+            pr_url = f"https://github.com/{m.repo}/pull/{m.pr_number}"
+            ticket = m.jira_ticket or "—"
+            cov_str = _coverage_display_str(m)
+            lines.append(
+                f"| [#{m.pr_number}]({pr_url}) | {m.repo} | {ticket} | {cov_str} | {m.testing_quality_score} | {m.tests_added} |"
+            )
+
+        # Casos a mejorar: PRs con score bajo, sin tests, o cobertura preocupante
+        needs_work = []
+        for m in all_metrics:
+            reasons = []
+            if m.has_testable_code and m.tests_added == 0:
+                reasons.append("sin tests añadidos (código testeable)")
+            if m.testing_quality_score < 6.0:
+                reasons.append("score bajo (< 6)")
+            if _coverage_for_display(m) < 0.5 and m.has_testable_code:
+                reasons.append("cobertura estimada baja")
+            if reasons:
+                needs_work.append((m, "; ".join(reasons)))
+
+        if needs_work:
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+            lines.append("## Casos a mejorar")
+            lines.append("")
+            lines.append("PRs que conviene revisar (tests, score o cobertura):")
+            lines.append("")
+            for m, reason in sorted(needs_work, key=lambda x: (x[0].repo, x[0].pr_number)):
+                pr_url = f"https://github.com/{m.repo}/pull/{m.pr_number}"
+                ticket = m.jira_ticket or "—"
+                lines.append(f"- **[#{m.pr_number} {m.repo}]({pr_url})** — {ticket} — *{reason}*")
+            lines.append("")
+
+        lines.append("---")
+        lines.append("")
+        lines.append("## Detalle por PR")
+        lines.append("")
+        for m in sorted(all_metrics, key=lambda x: (x.repo, x.pr_number)):
+            pr_url = f"https://github.com/{m.repo}/pull/{m.pr_number}"
+            ticket = m.jira_ticket or "—"
+            cov_str = _coverage_display_str(m)
+            detail_lines = [
+                f"### [#{m.pr_number} {m.repo}]({pr_url})",
+                "",
+                f"- **Título:** {m.title}",
+                f"- **Autor:** {m.author}",
+                f"- **Ticket:** {ticket}",
+                f"- **Score:** {m.testing_quality_score} / 10 · **Coverage (AI):** {cov_str} · **Tests añadidos:** {m.tests_added}",
+            ]
+            if m.has_testable_code and m.tests_added == 0:
+                detail_lines.append("- ⚠️ Sin tests añadidos para código testeable.")
+            if m.testing_quality_score < 6.0:
+                detail_lines.append("- ⚠️ Score bajo: revisar calidad o cobertura de tests.")
+            if _coverage_for_display(m) < 0.5 and m.has_testable_code:
+                detail_lines.append("- ⚠️ Cobertura estimada baja.")
+            detail_lines.append("")
+            lines.extend(detail_lines)
+        return "\n".join(lines).replace("\n\n\n", "\n\n")
 
     def _pr_markdown(self, m: PRMetrics) -> str:
         change_cov_pct = f"{m.change_coverage * 100:.0f}%"

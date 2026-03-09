@@ -631,6 +631,13 @@ def cmd_analyze_epic(args: argparse.Namespace) -> int:
 
     _print_epic_summary(epic_key, epic_issue, all_metrics, failed)
 
+    # Write markdown report to reports/epic_{key}_report.md
+    try:
+        report_path = reporter.generate_epic_report(epic_key, epic_issue, all_metrics, failed)
+        console.print(f"[green]✓[/green] Report written → [bold]{report_path}[/bold]")
+    except Exception as exc:
+        console.print(f"[yellow]Could not write epic report:[/yellow] {exc}")
+
     return 0
 
 
