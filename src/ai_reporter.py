@@ -248,19 +248,45 @@ def try_quality_score_openrouter(metrics: PRMetrics) -> Optional[float]:
         return None
 
 
+def _is_429(e: Exception) -> bool:
+    """True if the exception is a 429 Too Many Requests from the API."""
+    if getattr(e, "status_code", None) == 429:
+        return True
+    if "429" in str(e) or "too many requests" in str(e).lower():
+        return True
+    resp = getattr(e, "response", None)
+    if resp is not None and getattr(resp, "status_code", None) == 429:
+        return True
+    return False
+
+
 def _call_openrouter(model: str, api_key: str, messages: list[dict]) -> str:
-    """Call OpenRouter's OpenAI-compatible API and return the response text."""
+    """Call OpenRouter's OpenAI-compatible API; no built-in retries; on 429 wait then retry once."""
+    import time
     from openai import OpenAI
+
+    from src.config import settings
 
     client = OpenAI(
         base_url="https://openrouter.ai/api/v1",
         api_key=api_key,
+        max_retries=0,
     )
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-    )
-    return response.choices[0].message.content or ""
+    backoff_s = max(0.0, getattr(settings, "openrouter_429_backoff_seconds", 60.0))
+
+    for attempt in range(2):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+            )
+            return response.choices[0].message.content or ""
+        except Exception as e:
+            if attempt == 0 and _is_429(e) and backoff_s > 0:
+                time.sleep(backoff_s)
+                continue
+            raise
+    return ""
 
 
 def _call_ollama(model: str, messages: list[dict]) -> str:
@@ -314,13 +340,13 @@ def _call_llm(messages: list[dict]) -> str:
       2. Anthropic API (ANTHROPIC_API_KEY) — fallback if OpenRouter unavailable
       3. Ollama — local fallback
 
-    When using OpenRouter, waits openrouter_delay_seconds before each request to avoid 429 in batch.
+    When using OpenRouter: delay before and after each call (openrouter_delay_seconds), strictly sequential.
     """
     import time
     from src.config import settings
 
     if settings.openrouter_api_key:
-        delay = max(0.0, getattr(settings, "openrouter_delay_seconds", 2.0))
+        delay = max(0.0, getattr(settings, "openrouter_delay_seconds", 5.0))
         api_key = settings.openrouter_api_key
         primary = settings.openrouter_model
         candidates = [primary] + [m for m in _OPENROUTER_FALLBACKS if m != primary]
@@ -329,11 +355,14 @@ def _call_llm(messages: list[dict]) -> str:
             try:
                 if delay > 0:
                     time.sleep(delay)
-                return _call_openrouter(model, api_key, messages)
+                out = _call_openrouter(model, api_key, messages)
+                if delay > 0:
+                    time.sleep(delay)
+                return out
             except Exception as e:
                 last_err = e
                 if delay > 0:
-                    time.sleep(delay)  # back off before retry on same or next model
+                    time.sleep(delay)
                 continue
         raise last_err
 

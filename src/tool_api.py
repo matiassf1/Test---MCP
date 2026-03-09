@@ -205,12 +205,12 @@ def batch_analyze_author(
     pipeline = PRAnalysisPipeline(storage=backend)
 
     def _batch_delay() -> None:
-        """Delay between PRs when using OpenRouter to avoid 429."""
+        """Strictly sequential: extra delay between PRs when using OpenRouter to avoid 429."""
         try:
             from src.config import settings
             if getattr(settings, "openrouter_api_key", ""):
                 import time
-                delay = max(0.0, getattr(settings, "openrouter_delay_seconds", 2.0))
+                delay = max(0.0, getattr(settings, "openrouter_batch_delay_seconds", 12.0))
                 if delay > 0:
                     time.sleep(delay)
         except Exception:
@@ -273,7 +273,7 @@ def batch_analyze_repo(
             from src.config import settings
             if getattr(settings, "openrouter_api_key", ""):
                 import time
-                delay = max(0.0, getattr(settings, "openrouter_delay_seconds", 2.0))
+                delay = max(0.0, getattr(settings, "openrouter_batch_delay_seconds", 12.0))
                 if delay > 0:
                     time.sleep(delay)
         except Exception:
