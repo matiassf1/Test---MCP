@@ -193,6 +193,13 @@ def _make_sse_wrapped_app():
     from starlette.routing import Route, Mount
     from starlette.responses import JSONResponse, Response
 
+    def exception_handler(request, exc):
+        # anyio.ClosedResourceError when writer.send() on a closed SSE stream (client
+        # closed GET /sse or timeout before response was sent). Return 202 to avoid 500.
+        if type(exc).__name__ == "ClosedResourceError":
+            return Response(status_code=202, content=b"")
+        raise exc
+
     async def oauth_well_known(_request):
         # OAuth discovery: return minimal JSON so probes get 200 instead of 404
         return JSONResponse({
@@ -234,6 +241,7 @@ def _make_sse_wrapped_app():
             Route("/sse", post_sse_not_allowed, methods=["POST"]),
             Mount("/", raw_app),
         ],
+        exception_handlers={Exception: exception_handler},
     )
 
 
