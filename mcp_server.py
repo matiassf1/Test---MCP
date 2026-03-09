@@ -23,6 +23,7 @@ from src.tool_api import (
     list_prs_by_author as _list_prs_by_author,
     list_prs_by_jira_ticket as _list_prs_by_jira_ticket,
     analyze_pr_by_jira_ticket as _analyze_pr_by_jira_ticket,
+    analyze_epic as _analyze_epic,
     batch_analyze_author as _batch_analyze_author,
     batch_analyze_repo as _batch_analyze_repo,
 )
@@ -159,6 +160,36 @@ def analyze_pr_by_jira_ticket(
         pr_index: Which PR to analyze if several mention the ticket (0 = first/most recent)
     """
     return _json(_analyze_pr_by_jira_ticket(ticket_key=ticket_key, org=org, pr_index=pr_index))
+
+
+@mcp.tool()
+def analyze_epic(
+    epic_key: str,
+    org: str,
+    repo: str = "",
+    limit_per_ticket: int = 30,
+    skip_existing: bool = False,
+    include_ai_report: bool = True,
+) -> str:
+    """Map an Epic to its child tickets and linked PRs; analyze each PR and return a full report.
+
+    Fetches Epic + child issues from Jira (if configured), finds merged PRs mentioning the Epic
+    or any child ticket via GitHub Search, runs the full analysis pipeline on each PR, and
+    returns a consolidated report: epic summary, child tickets, per-PR metrics and AI report.
+
+    Args:
+        epic_key: Jira Epic key (e.g. CLOSE-1234)
+        org: GitHub organization (e.g. FloQastInc). Ignored if repo is set.
+        repo: Optional single repo to restrict search (e.g. FloQastInc/close)
+        limit_per_ticket: Max PRs to consider per ticket key (default 30)
+        skip_existing: If True, skip PRs already in storage and use stored metrics
+        include_ai_report: Include full ai_report per PR in the response (default True)
+    """
+    return _json(_analyze_epic(
+        epic_key=epic_key, org=org, repo=repo or "",
+        limit_per_ticket=limit_per_ticket, skip_existing=skip_existing,
+        include_ai_report=include_ai_report,
+    ))
 
 
 @mcp.tool()

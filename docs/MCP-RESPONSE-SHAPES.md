@@ -177,6 +177,44 @@ En error: `{ "error": "...", "ticket": "..." }` o, si no hay PRs: `{ "error": "N
 
 ---
 
+## 3d. `analyze_epic(epic_key, org, repo?, limit_per_ticket?, skip_existing?, include_ai_report?)`
+
+Mapea una épica de Jira a sus child tickets y a los PRs que los mencionan; analiza cada PR y devuelve un informe consolidado.
+
+### Ejemplo de respuesta (éxito)
+
+```json
+{
+  "epic_key": "CLOSE-8615",
+  "epic_summary": "Epic title from Jira",
+  "child_tickets": [
+    { "key": "CLOSE-12083", "summary": "...", "issue_type": "Story", "status": "Done" }
+  ],
+  "prs_analyzed": [
+    {
+      "repo": "FloQastInc/close", "pr": 4377, "ticket_linked": "CLOSE-12083",
+      "title": "...", "author": "...", "testing_quality_score": 6.94,
+      "llm_estimated_coverage": 0.85, "tests_added": 5, "ai_report": "# Testing Audit..."
+    }
+  ],
+  "summary": {
+    "total_prs": 5, "failed": 0, "avg_testing_quality_score": 7.2, "total_tests_added": 25
+  }
+}
+```
+
+| Campo | Descripción |
+|-------|-------------|
+| `epic_key` | Clave de la épica |
+| `epic_summary` | Resumen desde Jira (null si Jira no configurado) |
+| `child_tickets` | Lista de tickets hijos desde Jira (key, summary, issue_type, status) |
+| `prs_analyzed` | Por cada PR: repo, pr, ticket_linked, título, autor, scores, tests_added, ai_report (si include_ai_report) |
+| `summary` | total_prs, failed, avg_testing_quality_score, total_tests_added |
+
+Si no hay PRs: `prs_analyzed` vacío y `summary.message` indicando que no se encontraron PRs.
+
+---
+
 ## 4. `get_author_summary(author)`
 
 Agregados por autor a partir de los PRs ya analizados y guardados en storage.

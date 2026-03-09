@@ -237,6 +237,155 @@ def _metrics_dict_for_ticket(metrics) -> dict:
     return d
 
 
+def analyze_epic(
+    epic_key: str,
+    org: str,
+    repo: str = "",
+    limit_per_ticket: int = 30,
+    skip_existing: bool = False,
+    include_ai_report: bool = True,
+    storage: Optional[StorageBackend] = None,
+) -> dict[str, Any]:
+    """Map an Epic to its child tickets and linked PRs, analyze each PR, return a full report.
+
+    Uses Jira to fetch Epic metadata and child issues (if configured); then GitHub Search
+    to find merged PRs mentioning the Epic key or any child ticket; analyzes each PR and
+    returns a consolidated report with metrics and optional ai_report per PR.
+
+    Returns a dict with:
+      - epic_key, epic_summary (from Jira if available)
+      - child_tickets: list of { key, summary, issue_type, status } from Jira
+      - prs_analyzed: list of { repo, pr, ticket_linked, title, metrics summary, ai_report? }
+      - summary: { total_prs, failed, avg_testing_quality_score, total_tests_added, ... }
+    """
+    from src.github_service import GitHubService
+    from src.jira_service import JiraService
+    from src.pr_analysis_pipeline import PRAnalysisPipeline
+
+    backend = storage or _default_storage()
+    epic_key = epic_key.upper().strip()
+    scope = f"repo:{repo}" if repo else f"org:{org}"
+
+    # ---- 1. Epic + child tickets from Jira ----
+    epic_issue = None
+    child_issues: list[Any] = []
+    try:
+        jira_svc = JiraService()
+        if jira_svc.is_available():
+            epic_issue = jira_svc.fetch_issue(epic_key)
+            child_issues = jira_svc.fetch_epic_issues(epic_key) or []
+    except Exception:
+        pass
+
+    ticket_keys = [epic_key] + [getattr(ci, "key", str(ci)) for ci in child_issues]
+
+    # ---- 2. Discover PRs via GitHub Search ----
+    try:
+        gh = GitHubService()
+        pr_set: dict[tuple[str, int], str] = {}  # (repo, pr_number) -> ticket_key
+        for key in ticket_keys:
+            try:
+                pairs = gh.get_prs_mentioning_ticket(
+                    key, repo=repo, org=org, limit=limit_per_ticket
+                )
+                for (r, p) in pairs:
+                    if (r, p) not in pr_set:
+                        pr_set[(r, p)] = key
+            except Exception:
+                pass
+        pr_targets = list(pr_set.keys())
+    except Exception as e:
+        return {
+            "epic_key": epic_key,
+            "error": str(e),
+            "child_tickets": [],
+            "prs_analyzed": [],
+            "summary": {"total_prs": 0, "failed": 0},
+        }
+
+    if not pr_targets:
+        return {
+            "epic_key": epic_key,
+            "epic_summary": epic_issue.summary if epic_issue else None,
+            "child_tickets": [
+                {"key": getattr(c, "key", ""), "summary": getattr(c, "summary", None), "issue_type": getattr(c, "issue_type", None), "status": getattr(c, "status", None)}
+                for c in child_issues
+            ],
+            "prs_analyzed": [],
+            "summary": {"total_prs": 0, "failed": 0, "message": "No merged PRs found for this Epic or its child tickets"},
+        }
+
+    existing_keys = {(m.repo, m.pr_number) for m in backend.load_all()}
+    pipeline = PRAnalysisPipeline(storage=backend)
+
+    def _batch_delay() -> None:
+        try:
+            from src.config import settings
+            if getattr(settings, "openrouter_api_key", "") or getattr(settings, "openai_api_key", ""):
+                import time
+                delay = max(0.0, getattr(settings, "openrouter_batch_delay_seconds", 12.0))
+                if delay > 0:
+                    time.sleep(delay)
+        except Exception:
+            pass
+
+    prs_analyzed: list[dict[str, Any]] = []
+    failed = 0
+    for (pr_repo, pr_number) in pr_targets:
+        if skip_existing and (pr_repo, pr_number) in existing_keys:
+            all_stored = backend.load_all()
+            existing = next((m for m in all_stored if m.repo == pr_repo and m.pr_number == pr_number), None)
+            if existing:
+                prs_analyzed.append({
+                    "repo": pr_repo, "pr": pr_number, "ticket_linked": pr_set[(pr_repo, pr_number)],
+                    "title": existing.title, "author": existing.author,
+                    "testing_quality_score": existing.testing_quality_score,
+                    "llm_estimated_coverage": existing.llm_estimated_coverage,
+                    "tests_added": existing.tests_added,
+                    "ai_report": existing.ai_report if include_ai_report else None,
+                })
+                continue
+        try:
+            metrics = pipeline.analyze_pr(repo=pr_repo, pr_number=pr_number)
+            pipeline.save(metrics)
+            prs_analyzed.append({
+                "repo": pr_repo, "pr": pr_number, "ticket_linked": pr_set[(pr_repo, pr_number)],
+                "title": metrics.title, "author": metrics.author,
+                "testing_quality_score": metrics.testing_quality_score,
+                "llm_estimated_coverage": metrics.llm_estimated_coverage,
+                "tests_added": metrics.tests_added,
+                "ai_report": metrics.ai_report if include_ai_report else None,
+            })
+        except Exception as e:
+            failed += 1
+            prs_analyzed.append({
+                "repo": pr_repo, "pr": pr_number, "ticket_linked": pr_set[(pr_repo, pr_number)],
+                "status": "error", "error": str(e),
+            })
+        _batch_delay()
+
+    total = len(prs_analyzed)
+    successful = [p for p in prs_analyzed if "testing_quality_score" in p]
+    avg_score = (sum(p["testing_quality_score"] for p in successful) / len(successful)) if successful else 0.0
+    total_tests = sum(p.get("tests_added", 0) for p in successful)
+
+    return {
+        "epic_key": epic_key,
+        "epic_summary": epic_issue.summary if epic_issue else None,
+        "child_tickets": [
+            {"key": getattr(c, "key", ""), "summary": getattr(c, "summary", None), "issue_type": getattr(c, "issue_type", None), "status": getattr(c, "status", None)}
+            for c in child_issues
+        ],
+        "prs_analyzed": prs_analyzed,
+        "summary": {
+            "total_prs": total,
+            "failed": failed,
+            "avg_testing_quality_score": round(avg_score, 2),
+            "total_tests_added": total_tests,
+        },
+    }
+
+
 def list_prs_by_author(
     author: str,
     org: str,
