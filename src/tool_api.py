@@ -204,6 +204,18 @@ def batch_analyze_author(
 
     pipeline = PRAnalysisPipeline(storage=backend)
 
+    def _batch_delay() -> None:
+        """Delay between PRs when using OpenRouter to avoid 429."""
+        try:
+            from src.config import settings
+            if getattr(settings, "openrouter_api_key", ""):
+                import time
+                delay = max(0.0, getattr(settings, "openrouter_delay_seconds", 2.0))
+                if delay > 0:
+                    time.sleep(delay)
+        except Exception:
+            pass
+
     for repo, pr_number in pr_refs:
         if skip_existing and (repo, pr_number) in existing_keys:
             skipped += 1
@@ -216,6 +228,7 @@ def batch_analyze_author(
         except Exception as e:
             failed += 1
             analyzed.append({"repo": repo, "pr": pr_number, "status": "error", "error": str(e)})
+        _batch_delay()
 
     return {
         "total_found": len(pr_refs),
@@ -255,6 +268,17 @@ def batch_analyze_repo(
 
     pipeline = PRAnalysisPipeline(storage=backend)
 
+    def _batch_delay() -> None:
+        try:
+            from src.config import settings
+            if getattr(settings, "openrouter_api_key", ""):
+                import time
+                delay = max(0.0, getattr(settings, "openrouter_delay_seconds", 2.0))
+                if delay > 0:
+                    time.sleep(delay)
+        except Exception:
+            pass
+
     for pr in prs:
         pr_number = pr.number
         if skip_existing and (repo, pr_number) in existing_keys:
@@ -268,3 +292,4 @@ def batch_analyze_repo(
         except Exception as e:
             failed += 1
             analyzed.append({"repo": repo, "pr": pr_number, "status": "error", "error": str(e)})
+        _batch_delay()

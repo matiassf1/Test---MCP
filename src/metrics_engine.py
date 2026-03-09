@@ -27,19 +27,19 @@ def _compute_testing_quality_score(
 ) -> float:
     """Compute a 0–10 composite testing quality score.
 
-    Branches by data availability (highest-quality source wins):
+    We prefer AI/LLM estimates over mechanical (CI) coverage when both exist.
+    Branches by data availability:
 
-    A) Real CI coverage (change_coverage > 0):
-         coverage * 0.5 + ratio * 0.3 + pairing * 0.2
-
-    B) LLM-inferred coverage (reads actual diffs, 0.85 trust discount):
+    A) LLM-inferred coverage (when available) — primary source:
          coverage_llm * 0.85 * 0.45 + ratio * 0.35 + pairing * 0.20
+
+    B) Real CI coverage (only when no LLM estimate):
+         coverage * 0.5 + ratio * 0.3 + pairing * 0.2
 
     C) Diff-heuristic estimated coverage (name-matching, 0.7 discount):
          coverage_est * 0.7 * 0.35 + ratio * 0.4 + pairing * 0.25
 
-    D) Tests exist but no coverage data — score on observable signals only:
-         ratio * 0.55 + pairing * 0.45
+    D) Tests exist but no coverage data — ratio + pairing only
 
     E) No tests at all → 0.0
 
@@ -55,12 +55,13 @@ def _compute_testing_quality_score(
     ratio_score = ratio * 10.0
     pairing_score = test_file_pairing_rate * 10.0
 
-    if change_coverage > 0.0:
-        coverage_score = change_coverage * 10.0
-        raw = coverage_score * 0.5 + ratio_score * 0.3 + pairing_score * 0.2
-    elif llm_estimated_coverage is not None:
+    # Prefer LLM estimate over mechanical coverage when both exist
+    if llm_estimated_coverage is not None:
         coverage_score = llm_estimated_coverage * 0.85 * 10.0
         raw = coverage_score * 0.45 + ratio_score * 0.35 + pairing_score * 0.20
+    elif change_coverage > 0.0:
+        coverage_score = change_coverage * 10.0
+        raw = coverage_score * 0.5 + ratio_score * 0.3 + pairing_score * 0.2
     elif diff_estimated_coverage is not None:
         coverage_score = diff_estimated_coverage * 0.7 * 10.0
         raw = coverage_score * 0.35 + ratio_score * 0.4 + pairing_score * 0.25
