@@ -184,6 +184,60 @@ def batch_analyze_repo(
 
 
 # ---------------------------------------------------------------------------
+# SSE fixes: OAuth discovery + POST /sse → 405 with Allow: GET
+# ---------------------------------------------------------------------------
+
+def _make_sse_wrapped_app():
+    """Wrap MCP SSE app so /.well-known and POST /sse don't 404/405."""
+    from starlette.applications import Starlette
+    from starlette.routing import Route, Mount
+    from starlette.responses import JSONResponse, Response
+
+    async def oauth_well_known(_request):
+        # OAuth discovery: return minimal JSON so probes get 200 instead of 404
+        return JSONResponse({
+            "issuer": "/",
+            "authorization_endpoint": "/oauth/authorize",
+            "token_endpoint": "/oauth/token",
+        }, status_code=200)
+
+    async def post_sse_not_allowed(_request):
+        # POST /sse → 405; client must use GET for the SSE stream
+        return Response(
+            status_code=405,
+            headers={"Allow": "GET", "Content-Type": "application/json"},
+            content=b'{"error":"Use GET /sse for the event stream"}',
+        )
+
+    # Get the raw SSE/HTTP app from FastMCP (API varies by SDK version)
+    raw_app = None
+    try:
+        if hasattr(mcp, "sse_app"):
+            raw_app = mcp.sse_app()
+        elif hasattr(mcp, "http_app"):
+            try:
+                raw_app = mcp.http_app(transport="sse")
+            except TypeError:
+                raw_app = mcp.http_app()
+        elif hasattr(mcp, "get_asgi_app"):
+            raw_app = mcp.get_asgi_app(transport="sse")
+    except (AttributeError, TypeError):
+        pass
+    if raw_app is None:
+        raw_app = getattr(mcp, "_app", None)
+    if raw_app is None:
+        return None
+
+    return Starlette(
+        routes=[
+            Route("/.well-known/oauth-authorization-server", oauth_well_known, methods=["GET"]),
+            Route("/sse", post_sse_not_allowed, methods=["POST"]),
+            Mount("/", raw_app),
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
@@ -192,6 +246,11 @@ if __name__ == "__main__":
 
     if transport == "sse":
         print(f"Starting SSE MCP server on port {_port}")
-        mcp.run(transport="sse")
+        wrapped = _make_sse_wrapped_app()
+        if wrapped is not None:
+            import uvicorn
+            uvicorn.run(wrapped, host="0.0.0.0", port=_port)
+        else:
+            mcp.run(transport="sse")
     else:
         mcp.run(transport="stdio")
