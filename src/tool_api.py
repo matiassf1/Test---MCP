@@ -164,6 +164,31 @@ def get_multi_repo_summary(
     return engine.compute_team_summary(filtered, repo=repo_label, since_days=since_days)
 
 
+def list_prs_by_author(
+    author: str,
+    org: str,
+    since_days: int = 90,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """List merged PRs by author in an org (no analysis). Use with analyze_pr to process one-by-one.
+
+    Returns a dict with:
+      - ``prs`` — list of {repo, pr} for each merged PR
+      - ``total`` — length of that list
+    """
+    from src.github_service import GitHubService
+
+    try:
+        gh = GitHubService()
+        pr_refs = gh.get_merged_prs_by_author_org(
+            org=org, author=author, since_days=since_days, limit=limit
+        )
+        prs = [{"repo": repo, "pr": pr_number} for repo, pr_number in pr_refs]
+        return {"prs": prs, "total": len(prs)}
+    except Exception as e:
+        return {"error": str(e), "prs": [], "total": 0}
+
+
 def batch_analyze_author(
     author: str,
     org: str,

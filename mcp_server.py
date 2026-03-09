@@ -20,6 +20,7 @@ from src.tool_api import (
     get_repo_summary as _get_repo_summary,
     get_author_summary as _get_author_summary,
     get_multi_repo_summary as _get_multi_repo_summary,
+    list_prs_by_author as _list_prs_by_author,
     batch_analyze_author as _batch_analyze_author,
     batch_analyze_repo as _batch_analyze_repo,
 )
@@ -118,6 +119,25 @@ def get_author_summary(author: str) -> str:
         author: GitHub username exactly as it appears in PRs
     """
     return _json(_get_author_summary(author=author))
+
+
+@mcp.tool()
+def list_prs_by_author(
+    author: str,
+    org: str,
+    since_days: int = 90,
+    limit: int = 50,
+) -> str:
+    """List merged PRs by author in an org (discovery only, no analysis).
+    Use the returned repo+pr pairs with analyze_pr to process one PR at a time.
+
+    Args:
+        author: GitHub username
+        org: GitHub organization (e.g. FloQastInc)
+        since_days: How far back to search (default 90)
+        limit: Max PRs to return (default 50)
+    """
+    return _json(_list_prs_by_author(author=author, org=org, since_days=since_days, limit=limit))
 
 
 @mcp.tool()
