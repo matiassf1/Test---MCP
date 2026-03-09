@@ -176,16 +176,20 @@ class PRAnalysisPipeline:
         metrics.ai_estimated_coverage = diff_coverage
         self.timings["metrics"] = (time.perf_counter() - t) * 1000
 
-        # ---- 6. AI report (narrative) + LLM coverage estimate (requires AI_ENABLED=true) ----
-        # - ai_report: free-form markdown from try_generate_report (FloQast-aligned prompt).
-        #   Returned in analyze_pr / get_pr_metrics as "ai_report"; NOT in batch_analyze_author / get_author_summary.
-        # - testing_quality_score: formula in _compute_testing_quality_score(); when change_coverage==0
-        #   it uses llm_estimated_coverage (single 0-100 from try_estimate_coverage, different prompt).
-        #   So changing only the narrative prompt does not change the numeric score.
+        # ---- 6. AI report (narrative) + LLM coverage estimate (requires AI_ENABLED or OPENROUTER_API_KEY) ----
+        # When OPENROUTER_LIGHT_MODE=true: only try_estimate_coverage (1 call/PR) to avoid 429.
         t = time.perf_counter()
         from src.ai_reporter import try_generate_report, try_estimate_coverage
         from src.metrics_engine import _compute_testing_quality_score
-        metrics.ai_report = try_generate_report(metrics)
+
+        try:
+            from src.config import settings
+            light = getattr(settings, "openrouter_light_mode", False)
+        except Exception:
+            light = False
+
+        if not light:
+            metrics.ai_report = try_generate_report(metrics)
         metrics.llm_estimated_coverage = try_estimate_coverage(metrics)
 
         # Recompute quality score when we have LLM coverage and no CI coverage
@@ -199,8 +203,8 @@ class PRAnalysisPipeline:
                 llm_estimated_coverage=metrics.llm_estimated_coverage,
             )
 
-        # Optional: blend with qualitative LLM score — Anthropic (AIAnalyzer) or OpenRouter
-        if metrics.has_testable_code:
+        # Optional: blend with qualitative LLM score (skipped in light mode to reduce 429)
+        if not light and metrics.has_testable_code:
             from src.ai_analyzer import try_analyze
             from src.ai_reporter import try_quality_score_openrouter
             q: Optional[float] = None

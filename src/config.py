@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""                         # set this to enable report/coverage/quality via OpenRouter
     openrouter_model: str = "google/gemma-3-27b-it:free"  # free model; auto-falls back if rate-limited
     openrouter_delay_seconds: float = 2.0                # delay between requests to avoid 429 (batch runs)
+    openrouter_light_mode: bool = False                 # if True: 1 LLM call/PR (coverage only); skip report + quality score to avoid 429
 
     # External coverage providers (optional)
     codecov_token: str = ""
