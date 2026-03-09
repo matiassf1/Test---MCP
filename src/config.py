@@ -13,10 +13,12 @@ class Settings(BaseSettings):
     local_repo_path: str = ""
     anthropic_api_key: str = ""
 
-    # AI reporter — OpenRouter (preferred) or Ollama (local fallback).
-    # AI runs when ai_enabled=True OR openrouter_api_key is set (no need for both).
+    # AI reporter — OpenAI (direct) / OpenRouter / Anthropic / Ollama (first available).
+    # AI runs when ai_enabled=True OR any of openai_api_key, openrouter_api_key is set.
     ai_enabled: bool = False
     ai_model: str = "llama3.1"                          # Ollama model name
+    openai_api_key: str = ""                            # direct OpenAI API; use with openai_model e.g. gpt-4o-mini
+    openai_model: str = "gpt-4o-mini"                  # cheap, fast; good rate limits
     openrouter_api_key: str = ""                         # set this to enable report/coverage/quality via OpenRouter
     openrouter_model: str = "google/gemma-3-27b-it:free"  # free model; auto-falls back if rate-limited
     openrouter_delay_seconds: float = 5.0                # delay before/after each OpenRouter call (sequential spacing)

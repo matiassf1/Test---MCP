@@ -260,6 +260,15 @@ def _is_429(e: Exception) -> bool:
     return False
 
 
+def _call_openai(model: str, api_key: str, messages: list[dict]) -> str:
+    """Call OpenAI API (api.openai.com) — e.g. gpt-4o-mini; same client, no base_url."""
+    from openai import OpenAI
+
+    client = OpenAI(api_key=api_key, max_retries=0)
+    response = client.chat.completions.create(model=model, messages=messages)
+    return response.choices[0].message.content or ""
+
+
 def _call_openrouter(model: str, api_key: str, messages: list[dict]) -> str:
     """Call OpenRouter's OpenAI-compatible API; no built-in retries; on 429 wait then retry once."""
     import time
@@ -333,17 +342,28 @@ def _call_anthropic(messages: list[dict]) -> str:
 
 
 def _call_llm(messages: list[dict]) -> str:
-    """Route the call to OpenRouter → Anthropic → Ollama (first available wins).
+    """Route the call to OpenAI → OpenRouter → Anthropic → Ollama (first available wins).
 
     Priority:
-      1. OpenRouter (OPENROUTER_API_KEY) — free models with auto-fallback chain
-      2. Anthropic API (ANTHROPIC_API_KEY) — fallback if OpenRouter unavailable
-      3. Ollama — local fallback
+      1. OpenAI (OPENAI_API_KEY) — e.g. gpt-4o-mini, good rate limits
+      2. OpenRouter (OPENROUTER_API_KEY) — free models with auto-fallback chain
+      3. Anthropic API (ANTHROPIC_API_KEY)
+      4. Ollama — local fallback
 
-    When using OpenRouter: delay before and after each call (openrouter_delay_seconds), strictly sequential.
+    OpenRouter path: delay before/after each call to avoid 429. OpenAI direct has no extra delay.
     """
     import time
     from src.config import settings
+
+    if settings.openai_api_key:
+        try:
+            return _call_openai(
+                settings.openai_model,
+                settings.openai_api_key,
+                messages,
+            )
+        except Exception:
+            pass
 
     if settings.openrouter_api_key:
         delay = max(0.0, getattr(settings, "openrouter_delay_seconds", 5.0))
@@ -398,11 +418,12 @@ class AIReporter:
 # ---------------------------------------------------------------------------
 
 def _is_ai_enabled() -> bool:
-    """True when AI is available: AI_ENABLED=true or OPENROUTER_API_KEY set (OpenRouter path)."""
+    """True when AI is available: AI_ENABLED or OPENAI_API_KEY or OPENROUTER_API_KEY set."""
     try:
         from src.config import settings
         return bool(
             getattr(settings, "ai_enabled", False)
+            or getattr(settings, "openai_api_key", "")
             or getattr(settings, "openrouter_api_key", "")
         )
     except Exception:
