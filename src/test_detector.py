@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+from src.file_classification import is_generated, is_test_file
 from src.models import FileChange, TestFile, TestType
 
 
@@ -80,7 +81,7 @@ class TestDetector:
         """Return a ``TestFile`` for every test file touched in the PR."""
         test_files: list[TestFile] = []
         for fc in file_changes:
-            if not self._is_test_file(fc.filename) or self._is_generated(fc.filename):
+            if not is_test_file(fc.filename) or is_generated(fc.filename):
                 continue
             test_type = self._classify(fc)
             is_new = fc.status == "added"
@@ -98,28 +99,6 @@ class TestDetector:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-
-    _GENERATED_PATH_SEGMENTS = {"/generated/", "/__generated__/", "/gen/", "/.generated/"}
-
-    def _is_generated(self, filename: str) -> bool:
-        normalized = filename.replace("\\", "/").lower()
-        return any(seg in normalized for seg in self._GENERATED_PATH_SEGMENTS)
-
-    def _is_test_file(self, filename: str) -> bool:
-        basename = os.path.basename(filename).lower()
-        normalized = filename.replace("\\", "/").lower()
-        return (
-            # Python conventions
-            basename.startswith("test_")
-            or basename.endswith("_test.py")
-            # JS/TS conventions: foo.test.ts, foo.spec.ts, foo.test.js, foo.spec.js
-            or ".test." in basename
-            or ".spec." in basename
-            # Directory-based (any language)
-            or "/tests/" in normalized
-            or "/test/" in normalized
-            or "/__tests__/" in normalized
-        )
 
     def _classify(self, fc: FileChange) -> TestType:
         """Return the most specific TestType for this file."""

@@ -17,6 +17,7 @@ from mcp.server.fastmcp import FastMCP
 from src.tool_api import (
     analyze_pr as _analyze_pr,
     get_pr_metrics as _get_pr_metrics,
+    get_pr_description_report as _get_pr_description_report,
     get_repo_summary as _get_repo_summary,
     get_author_summary as _get_author_summary,
     get_multi_repo_summary as _get_multi_repo_summary,
@@ -47,12 +48,18 @@ def _json(obj: Any) -> str:
     return json.dumps(obj, default=_default, indent=2)
 
 
-def _metrics_dict(metrics) -> dict:
+def _metrics_dict(metrics, include_description_report: bool = False) -> dict:
     d = metrics.model_dump(exclude={"file_changes", "test_files"})
     d["files_summary"] = [
         {"file": fc.filename, "status": fc.status, "additions": fc.additions}
         for fc in (metrics.file_changes or [])
     ]
+    if include_description_report:
+        try:
+            from src.report_generator import ReportGenerator
+            d["description_markdown"] = ReportGenerator().pr_description_snippet(metrics)
+        except Exception:
+            d["description_markdown"] = None
     return d
 
 
@@ -69,20 +76,25 @@ def analyze_pr(
     repo: str,
     pr: int,
     repo_path: Optional[str] = None,
+    include_description_report: bool = True,
 ) -> str:
     """Fetch a GitHub PR, run the full analysis pipeline (test quality, LLM coverage
     estimate, Jira link), persist metrics, and return a JSON summary.
+
+    When include_description_report is True (default), the response includes
+    \"description_markdown\": a markdown block you can paste into the PR description.
 
     Args:
         repo: GitHub repository in org/name format, e.g. FloQastInc/reconciliations_lambdas
         pr: Pull Request number
         repo_path: Optional absolute path to a local checkout. When provided, Jest
                    runs to compute mechanical coverage for changed JS/TS files.
+        include_description_report: If True, add description_markdown to the response (default True)
     """
     metrics = _analyze_pr(repo=repo, pr=pr, repo_path=repo_path)
     if metrics is None:
         return _json({"error": "Analysis failed — check GITHUB_TOKEN and repo/PR number"})
-    return _json(_metrics_dict(metrics))
+    return _json(_metrics_dict(metrics, include_description_report=include_description_report))
 
 
 @mcp.tool()
@@ -97,6 +109,24 @@ def get_pr_metrics(repo: str, pr: int) -> str:
     if metrics is None:
         return _json({"error": "No metrics found. Run analyze_pr first."})
     return _json(_metrics_dict(metrics))
+
+
+@mcp.tool()
+def get_pr_description_report(repo: str, pr: int, run_analysis_if_missing: bool = True) -> str:
+    """Return a markdown report ready to paste into the PR description.
+
+    Includes testing quality score, coverage, test ratio, and AI analysis (if available).
+    Use the returned \"markdown\" field as the body for the PR description or a comment.
+
+    Args:
+        repo: GitHub repository in org/name format, e.g. FloQastInc/reconciliations_lambdas
+        pr: Pull Request number
+        run_analysis_if_missing: If True (default), run analyze_pr when metrics are not in storage
+    """
+    out = _get_pr_description_report(
+        repo=repo, pr=pr, run_analysis_if_missing=run_analysis_if_missing
+    )
+    return _json(out)
 
 
 @mcp.tool()
@@ -253,10 +283,17 @@ def batch_analyze_repo(
 # ---------------------------------------------------------------------------
 
 def _make_sse_wrapped_app():
-    """Wrap MCP SSE app so /.well-known and POST /sse don't 404/405."""
+    """Wrap MCP SSE app so /.well-known and POST /sse don't 404/405. Optional auth via MCP_AUTH_SECRET."""
     from starlette.applications import Starlette
     from starlette.routing import Route, Mount
     from starlette.responses import JSONResponse, Response
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    try:
+        from src.config import settings
+        _auth_secret = (settings.mcp_auth_secret or "").strip()
+    except Exception:
+        _auth_secret = (os.environ.get("MCP_AUTH_SECRET") or "").strip()
 
     def exception_handler(request, exc):
         # Avoid 500 when client disconnects or times out; keep server up for next request.
@@ -305,7 +342,7 @@ def _make_sse_wrapped_app():
     if raw_app is None:
         return None
 
-    return Starlette(
+    app = Starlette(
         routes=[
             Route("/.well-known/oauth-authorization-server", oauth_well_known, methods=["GET"]),
             Route("/sse", post_sse_not_allowed, methods=["POST"]),
@@ -313,6 +350,35 @@ def _make_sse_wrapped_app():
         ],
         exception_handlers={Exception: exception_handler},
     )
+
+    # Optional: require API key for /sse (and any path under /) when MCP_AUTH_SECRET is set
+    if _auth_secret:
+
+        class RequireMCPAuth(BaseHTTPMiddleware):
+            def __init__(self, app, secret: str):
+                super().__init__(app)
+                self._secret = secret
+
+            async def dispatch(self, request, call_next):
+                path = request.url.path or ""
+                if path == "/sse" or path.startswith("/sse?"):
+                    auth = request.headers.get("authorization") or request.headers.get("Authorization")
+                    api_key = request.headers.get("x-api-key") or request.headers.get("X-API-Key")
+                    if auth and auth.strip().lower().startswith("bearer "):
+                        token = auth.split(maxsplit=1)[1].strip()
+                    else:
+                        token = api_key or ""
+                    if token != self._secret:
+                        return Response(
+                            status_code=401,
+                            content=b'{"error":"Unauthorized: missing or invalid MCP auth (use Authorization: Bearer <secret> or X-API-Key: <secret>)"}',
+                            headers={"Content-Type": "application/json", "WWW-Authenticate": "Bearer"},
+                        )
+                return await call_next(request)
+
+        app.add_middleware(RequireMCPAuth, secret=_auth_secret)
+
+    return app
 
 
 # ---------------------------------------------------------------------------

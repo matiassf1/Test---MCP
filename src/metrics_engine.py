@@ -48,7 +48,7 @@ def _compute_testing_quality_score(
     has_tests = test_lines_added > 0
 
     if production_lines_added > 0:
-        ratio = min(test_lines_added / production_lines_added, 1.0)
+        ratio = min(test_lines_added / production_lines_added, 2.0)
     else:
         ratio = 1.0 if has_tests else 0.0
 

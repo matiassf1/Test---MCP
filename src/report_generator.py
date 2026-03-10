@@ -45,6 +45,34 @@ class ReportGenerator:
     # PR report
     # ------------------------------------------------------------------
 
+    def pr_description_snippet(self, metrics: PRMetrics) -> str:
+        """Return a compact markdown block suitable for pasting into the PR description.
+
+        Includes: testing quality badge, key metrics table, and AI analysis (if available).
+        Use with get_pr_description_report or after analyze_pr to get this text for the PR body.
+        """
+        badge = _score_badge(metrics.testing_quality_score)
+        cov_str = _coverage_display_str(metrics)
+        score_line = (
+            f"**{metrics.testing_quality_score:.1f} / 10** ({badge})"
+            if metrics.has_testable_code
+            else "N/A (config/i18n-only)"
+        )
+        lines = [
+            "## Testing quality",
+            "",
+            "| Metric | Value |",
+            "|--------|-------|",
+            f"| Quality score | {score_line} |",
+            f"| Coverage (est.) | {cov_str} |",
+            f"| Test/code ratio | {metrics.test_code_ratio:.2f} |",
+            f"| Tests added | {metrics.tests_added} |",
+            "",
+        ]
+        if metrics.ai_report:
+            lines += ["### AI analysis", "", metrics.ai_report.strip(), ""]
+        return "\n".join(lines).strip()
+
     def generate_pr_report(self, metrics: PRMetrics) -> tuple[Path, Path]:
         """Write PR report files and return ``(md_path, json_path)``."""
         md_path = REPORTS_DIR / f"pr_{metrics.pr_number}_report.md"

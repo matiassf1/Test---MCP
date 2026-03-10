@@ -6,35 +6,7 @@ from typing import Optional
 from src.models import AIAnalysis, PRMetrics
 
 
-# ---------------------------------------------------------------------------
-# Heuristics shared with ChangeAnalyzer (duplicated to avoid circular imports)
-# ---------------------------------------------------------------------------
-
-_GENERATED_SEGMENTS = {"/generated/", "/__generated__/", "/gen/", "/.generated/"}
-_GENERATED_SUFFIXES = (".generated.ts", ".generated.js", ".generated.py", ".g.ts", ".pb.ts", "_pb2.py")
-_TEST_PATTERNS = (".test.", ".spec.", "test_", "_test.")
-
-
-def _is_generated(filename: str) -> bool:
-    n = filename.replace("\\", "/").lower()
-    return any(seg in n for seg in _GENERATED_SEGMENTS) or any(
-        n.endswith(s) for s in _GENERATED_SUFFIXES
-    )
-
-
-def _is_test_file(filename: str) -> bool:
-    import os
-    base = os.path.basename(filename).lower()
-    n = filename.replace("\\", "/").lower()
-    return (
-        base.startswith("test_")
-        or base.endswith("_test.py")
-        or ".test." in base
-        or ".spec." in base
-        or "/tests/" in n
-        or "/test/" in n
-        or "/__tests__/" in n
-    )
+from src.file_classification import is_generated as _is_generated, is_test_file as _is_test_file
 
 
 # ---------------------------------------------------------------------------
@@ -42,13 +14,14 @@ def _is_test_file(filename: str) -> bool:
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = """\
-You are a senior engineer reviewing test coverage quality for a GitHub PR, aligned with FloQast testing standards.
+You are a senior engineer reviewing test coverage quality for a GitHub PR, aligned with FloQast testing standards (fq-skills: floqast-testing-standards, react-testing-standards).
 
 Rules:
 - Generated files (src/generated/, *.generated.ts, *.pb.ts, etc.) are already excluded — ignore them.
 - Judge only hand-written production code vs hand-written tests.
-- Name specific untested functions/classes; suggest concrete test cases (e.g. Arrange-Act-Assert, behavior-focused).
+- FloQast bar: 90% for new code (diff); 95% business-critical logic (selectors, auth, state shape), 95% utilities. Name specific untested functions/classes; suggest concrete test cases (e.g. Arrange-Act-Assert, naming "should [behavior] when [condition]", one behavior per test).
 - FloQast context: prefer True Unit / Component (RTL) / Component Integration tests; mock externals (APIs, React Query) not React core or components under test; tests should survive refactor when behavior is unchanged; meaningful assertions over coverage inflation.
+- For React tests: prefer getByRole/getByLabelText over getByTestId; userEvent over fireEvent; test user-visible behavior, not implementation details (state, instance methods, shallow).
 - Do not penalize when no testing is required: PR only consumes a well-tested library (no new app logic) or only touches auto-generated code from tested tools (protobuf, codegen). In those cases give 8–10 and state in assessment that no new tests are required.
 - Score 0–10: 0–3 critical gaps | 4–5 major paths missing | 6–7 minor gaps | 8–9 good | 10 comprehensive and aligned with org standards.
 

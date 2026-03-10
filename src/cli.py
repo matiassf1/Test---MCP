@@ -11,7 +11,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-console = Console()
+# force_terminal=True so output appears when run from non-TTY (e.g. some IDE terminals, CI)
+console = Console(force_terminal=True)
 
 
 # ---------------------------------------------------------------------------
@@ -20,31 +21,43 @@ console = Console()
 
 def cmd_analyze_change(args: argparse.Namespace) -> int:
     """Fetch a PR, analyze it via PRAnalysisPipeline, and write reports."""
-    from src.pr_analysis_pipeline import PRAnalysisPipeline
-    from src.report_generator import ReportGenerator
-    from src.storage import create_storage
-
     repo: str = args.repo
     pr_number: int = args.pr
     repo_path: str = getattr(args, "repo_path", "") or ""
     storage_backend: str = getattr(args, "storage", "json")
     use_cache: bool = getattr(args, "cache", False)
 
+    # Immediate feedback (works even if Rich is not rendering)
+    print(f"Analyzing PR #{pr_number} in {repo}…", flush=True)
+
+    from src.pr_analysis_pipeline import PRAnalysisPipeline
+    from src.report_generator import ReportGenerator
+    from src.storage import create_storage
+
     console.rule(f"[bold blue]Analyzing PR #{pr_number} in {repo}")
 
     storage = create_storage(storage_backend)
     pipeline = PRAnalysisPipeline(storage=storage, use_cache=use_cache)
 
-    with console.status("Fetching PR and running analysis…"):
-        try:
+    try:
+        with console.status("Fetching PR and running analysis…"):
             metrics = pipeline.analyze_pr(
                 repo=repo,
                 pr_number=pr_number,
                 repo_path=repo_path or None,
             )
-        except Exception as exc:
-            console.print(f"[red]Analysis failed:[/red] {exc}")
-            return 1
+    except Exception as exc:
+        err = str(exc).strip()
+        msg = (
+            "PR or repo not found. Check repo name and PR number. If the repo is private, ensure GITHUB_TOKEN has access."
+            if ("404" in err or "Not Found" in err)
+            else "Access forbidden. GITHUB_TOKEN may lack scope or the repo may be private."
+            if ("403" in err or "Forbidden" in err)
+            else f"Analysis failed: {exc}"
+        )
+        print(f"Error: {msg}", file=sys.stderr, flush=True)
+        console.print(f"[red]{msg}[/red]")
+        return 1
 
     console.print(
         f"[green]✓[/green] PR fetched: [bold]{metrics.title}[/bold] by {metrics.author}"
@@ -87,6 +100,39 @@ def cmd_analyze_change(args: argparse.Namespace) -> int:
     console.print(f"  {md_path}")
     console.print(f"  {json_path}")
 
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# pr_description_report command
+# ---------------------------------------------------------------------------
+
+def cmd_pr_description_report(args: argparse.Namespace) -> int:
+    """Print markdown snippet for PR description (paste into GitHub PR body)."""
+    from src.tool_api import get_pr_description_report
+    from src.storage import create_storage
+
+    repo: str = args.repo
+    pr_number: int = args.pr
+    run_analysis: bool = getattr(args, "run_analysis", True)
+    storage_backend: str = getattr(args, "storage", "json")
+
+    storage = create_storage(storage_backend)
+    out = get_pr_description_report(
+        repo=repo,
+        pr=pr_number,
+        storage=storage,
+        run_analysis_if_missing=run_analysis,
+    )
+    if "error" in out:
+        console.print(f"[red]{out['error']}[/red]")
+        return 1
+    markdown = out.get("markdown", "")
+    from_cache = out.get("from_cache", False)
+    if from_cache:
+        console.print("[dim]Using cached metrics. Run analyze_change to refresh.[/dim]\n")
+    console.print(Panel(markdown, title="Copy into PR description", border_style="green"))
+    console.print("\n[dim]Paste the content above into your PR description (e.g. under \"Testing quality\").[/dim]")
     return 0
 
 
@@ -781,6 +827,22 @@ def build_parser() -> argparse.ArgumentParser:
     _add_storage_arg(p_analyze)
     _add_cache_arg(p_analyze)
 
+    # pr_description_report
+    p_desc = sub.add_parser(
+        "pr_description_report",
+        help="Print markdown report to paste into PR description",
+    )
+    p_desc.add_argument("--repo", required=True, help="GitHub repo, e.g. org/project")
+    p_desc.add_argument("--pr", required=True, type=int, help="PR number")
+    p_desc.add_argument(
+        "--no-analyze",
+        action="store_true",
+        dest="no_run_analysis",
+        help="Do not run analyze_pr if metrics missing; fail instead",
+    )
+    p_desc.set_defaults(run_analysis=True)
+    _add_storage_arg(p_desc)
+
     # analyze_author
     p_author = sub.add_parser(
         "analyze_author", help="Analyze all merged PRs by a specific author"
@@ -844,6 +906,10 @@ def main() -> int:
 
     if args.command == "analyze_change":
         return cmd_analyze_change(args)
+    elif args.command == "pr_description_report":
+        # --no-analyze sets no_run_analysis=True, so run_analysis = not args.no_run_analysis
+        args.run_analysis = not getattr(args, "no_run_analysis", False)
+        return cmd_pr_description_report(args)
     elif args.command == "analyze_author":
         return cmd_analyze_author(args)
     elif args.command == "analyze_epic":
@@ -853,3 +919,7 @@ def main() -> int:
 
     parser.print_help()
     return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

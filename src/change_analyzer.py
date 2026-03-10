@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import re
 from typing import Optional
 
+from src.file_classification import is_generated, is_test_file
 from src.models import FileChange
 
 _KEYWORDS = frozenset({
@@ -27,48 +29,12 @@ _DEF_RE = re.compile(
 class ChangeAnalyzer:
     """Analyzes the set of file changes in a PR to compute line-level metrics."""
 
-    # Extensions that are not source code — excluded from coverage analysis
     _EXCLUDED_EXTENSIONS = {
-        ".json",
-        ".yaml",
-        ".yml",
-        ".toml",
-        ".cfg",
-        ".ini",
-        ".md",
-        ".txt",
-        ".lock",
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".svg",
-        ".ico",
-        ".gif",
-        ".woff",
-        ".woff2",
+        ".json", ".yaml", ".yml", ".toml", ".cfg", ".ini",
+        ".md", ".txt", ".lock",
+        ".png", ".jpg", ".jpeg", ".svg", ".ico", ".gif",
+        ".woff", ".woff2",
     }
-
-    # Path segments that indicate auto-generated code — excluded from all metrics.
-    # Matched as substrings of the normalized (forward-slash) file path.
-    _GENERATED_PATH_SEGMENTS = {
-        "/generated/",
-        "/__generated__/",
-        "/gen/",
-        "/.generated/",
-    }
-
-    # File suffixes that indicate a single auto-generated file (e.g. foo.generated.ts)
-    _GENERATED_FILE_SUFFIXES = (
-        ".generated.ts",
-        ".generated.js",
-        ".generated.py",
-        ".g.ts",
-        ".g.js",
-        ".pb.ts",
-        ".pb.js",
-        ".pb.go",
-        "_pb2.py",
-    )
 
     def filter_source_changes(self, file_changes: list[FileChange]) -> list[FileChange]:
         """Return all source-code files (excludes configs, docs, assets, removed files, generated files)."""
@@ -78,7 +44,7 @@ class ChangeAnalyzer:
             if (
                 ext not in self._EXCLUDED_EXTENSIONS
                 and fc.status != "removed"
-                and not self._is_generated(fc.filename)
+                and not is_generated(fc.filename)
             ):
                 result.append(fc)
         return result
@@ -89,12 +55,12 @@ class ChangeAnalyzer:
         Used to compute production-code line counts separately from test lines.
         """
         source = self.filter_source_changes(file_changes)
-        return [fc for fc in source if not self._is_test_file(fc.filename)]
+        return [fc for fc in source if not is_test_file(fc.filename)]
 
     def filter_test_changes(self, file_changes: list[FileChange]) -> list[FileChange]:
         """Return source files that ARE test files."""
         source = self.filter_source_changes(file_changes)
-        return [fc for fc in source if self._is_test_file(fc.filename)]
+        return [fc for fc in source if is_test_file(fc.filename)]
 
     def total_modified_lines(self, file_changes: list[FileChange]) -> int:
         """Count total added/changed lines across all provided FileChanges."""
@@ -145,7 +111,6 @@ class ChangeAnalyzer:
 
     def _module_is_imported(self, filename: str, test_content: str) -> bool:
         """True if the production file's basename appears in an import/require line."""
-        import os
         stem = os.path.splitext(os.path.basename(filename))[0].lower()
         for line in test_content.splitlines():
             lower = line.lower()
@@ -205,8 +170,6 @@ class ChangeAnalyzer:
         production file's stem, e.g. auth.ts → auth.test.ts / test_auth.py.
         Returns 1.0 when there are no production files (config-only PR).
         """
-        import os
-
         if not production_changes:
             return 1.0
 
@@ -221,14 +184,15 @@ class ChangeAnalyzer:
         )
         return paired / len(production_changes)
 
+    _ASSERTION_KEYWORDS = (
+        "expect(", "assert", "tobe(", "toequal(", "tohavebeencalled",
+        "tocontain(", "tomatch(", "tothrow(", "should.", "assertraises(",
+        "assertequal(", "asserttrue(", "assertfalse(", "assertin(",
+        "verify(", "sinon.", "spy.", "stub.",
+    )
+
     def count_test_assertions(self, test_changes: list[FileChange]) -> int:
         """Count lines containing assertion keywords in added test diff lines."""
-        _KEYWORDS = (
-            "expect(", "assert", "tobe(", "toequal(", "tohavebeencalled",
-            "tocontain(", "tomatch(", "tothrow(", "should.", "assertraises(",
-            "assertequal(", "asserttrue(", "assertfalse(", "assertin(",
-            "verify(", "sinon.", "spy.", "stub.",
-        )
         count = 0
         for fc in test_changes:
             if not fc.patch:
@@ -236,7 +200,7 @@ class ChangeAnalyzer:
             for line in fc.patch.splitlines():
                 if line.startswith("+") and not line.startswith("+++"):
                     lower = line.lower()
-                    if any(kw in lower for kw in _KEYWORDS):
+                    if any(kw in lower for kw in self._ASSERTION_KEYWORDS):
                         count += 1
         return count
 
@@ -253,31 +217,6 @@ class ChangeAnalyzer:
         if dot_index == -1:
             return ""
         return filename[dot_index:].lower()
-
-    def _is_generated(self, filename: str) -> bool:
-        """Return True if the file is auto-generated and should be excluded from metrics."""
-        normalized = filename.replace("\\", "/").lower()
-        if any(seg in normalized for seg in self._GENERATED_PATH_SEGMENTS):
-            return True
-        return any(normalized.endswith(suffix) for suffix in self._GENERATED_FILE_SUFFIXES)
-
-    def _is_test_file(self, filename: str) -> bool:
-        import os
-
-        basename = os.path.basename(filename).lower()
-        normalized = filename.replace("\\", "/").lower()
-        return (
-            # Python conventions
-            basename.startswith("test_")
-            or basename.endswith("_test.py")
-            # JS/TS conventions: foo.test.ts, foo.spec.ts, foo.test.js, foo.spec.js
-            or ".test." in basename
-            or ".spec." in basename
-            # Directory-based (any language)
-            or "/tests/" in normalized
-            or "/test/" in normalized
-            or "/__tests__/" in normalized
-        )
 
     def _extract_modified_context_names(self, file_changes: list[FileChange]) -> set[str]:
         """Extract function/class names from context lines that surround modified lines.

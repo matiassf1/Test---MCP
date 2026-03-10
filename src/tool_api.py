@@ -79,6 +79,37 @@ def get_pr_metrics(
     return backend.load(pr)
 
 
+def get_pr_description_report(
+    repo: str,
+    pr: int,
+    storage: Optional[StorageBackend] = None,
+    run_analysis_if_missing: bool = True,
+) -> dict[str, Any]:
+    """Return a markdown snippet suitable for pasting into the PR description.
+
+    Contains: testing quality score, coverage, test ratio, and AI analysis (if available).
+    If metrics are not in storage and run_analysis_if_missing is True, runs analyze_pr first.
+
+    Returns:
+        - On success: {"markdown": "<markdown string>", "from_cache": bool}
+        - On failure: {"error": "<message>"}
+    """
+    from src.report_generator import ReportGenerator
+
+    backend = storage or _default_storage()
+    all_metrics = backend.load_all()
+    metrics = next((m for m in all_metrics if m.repo == repo and m.pr_number == pr), None)
+    from_cache = metrics is not None
+    if not metrics and run_analysis_if_missing:
+        metrics = analyze_pr(repo=repo, pr=pr, storage=backend)
+    if not metrics:
+        return {
+            "error": "No metrics for this PR. Run analyze_pr first or ensure run_analysis_if_missing is True.",
+        }
+    snippet = ReportGenerator().pr_description_snippet(metrics)
+    return {"markdown": snippet, "from_cache": from_cache}
+
+
 def get_repo_summary(
     repo: str,
     since_days: int = 30,

@@ -86,7 +86,6 @@ class PRAnalysisPipeline:
         pr_date = getattr(pr, "merged_at", None) or getattr(pr, "created_at", None)
         branch = getattr(pr.head, "ref", "") or ""
         description = pr.body or ""
-        head_sha = getattr(pr.head, "sha", None) or ""
         self.timings["github_pr"] = (time.perf_counter() - t) * 1000
 
         # Extract Jira ticket (pure string — no I/O)
@@ -192,8 +191,8 @@ class PRAnalysisPipeline:
             metrics.ai_report = try_generate_report(metrics)
         metrics.llm_estimated_coverage = try_estimate_coverage(metrics)
 
-        # Recompute quality score when we have LLM coverage and no CI coverage
-        if metrics.llm_estimated_coverage is not None and metrics.change_coverage == 0.0:
+        # Recompute quality score whenever LLM coverage is available (preferred over CI)
+        if metrics.llm_estimated_coverage is not None:
             metrics.testing_quality_score = _compute_testing_quality_score(
                 change_coverage=metrics.change_coverage,
                 test_lines_added=metrics.test_lines_added,

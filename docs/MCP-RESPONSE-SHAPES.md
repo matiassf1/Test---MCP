@@ -4,9 +4,11 @@ Este documento describe la forma (estructura y campos) de lo que retorna cada he
 
 ---
 
-## 1. `analyze_pr(repo, pr, repo_path?)`
+## 1. `analyze_pr(repo, pr, repo_path?, include_description_report?)`
 
 Analiza un PR (GitHub + Jira + LLM) y persiste métricas. Retorna un objeto con métricas y resumen de archivos; **no** incluye los diffs completos ni la lista de `test_files` en detalle.
+
+Si `include_description_report` es `true` (por defecto), la respuesta incluye el campo **`description_markdown`**: un bloque de markdown listo para pegar en la descripción del PR (sección "Testing quality" + métricas + análisis de IA).
 
 ### Ejemplo de respuesta (campos)
 
@@ -50,7 +52,8 @@ Analiza un PR (GitHub + Jira + LLM) y persiste métricas. Retorna un objeto con 
   "files_summary": [
     { "file": "src/lambdas/item/routes.js", "status": "modified", "additions": 6 },
     { "file": "src/shared/utils/checklist-item.utils.test.js", "status": "modified", "additions": 20 }
-  ]
+  ],
+  "description_markdown": "## Testing quality\n\n| Metric | Value |\n|--------|-------|\n| Quality score | 7.7 / 10 (Good) |\n..."
 }
 ```
 
@@ -86,6 +89,7 @@ Analiza un PR (GitHub + Jira + LLM) y persiste métricas. Retorna un objeto con 
 | `llm_estimated_coverage` | float \| null | Coverage 0.0–1.0 estimado por el LLM según diffs |
 | `llm_quality_score` | float \| null | Puntuación 0–10 solo del modelo (opinión cualitativa); no usa fórmulas. Null si light mode o sin AI. Se mezcla al 35% con la fórmula para obtener `testing_quality_score`. |
 | `files_summary` | array | Lista de `{ file, status, additions }` por archivo tocado |
+| `description_markdown` | string \| null | *(Solo si include_description_report=true)* Bloque markdown listo para pegar en la descripción del PR (Testing quality + métricas + AI analysis). |
 
 En caso de error, la respuesta es un objeto con clave `"error"` y mensaje en string.
 
@@ -99,6 +103,38 @@ En caso de error, la respuesta es un objeto con clave `"error"` y mensaje en str
 ## 2. `get_pr_metrics(repo, pr)`
 
 Devuelve las métricas ya persistidas de un PR (misma forma que `analyze_pr`). Si no hay métricas: `{ "error": "No metrics found. Run analyze_pr first." }`.
+
+---
+
+## 2b. `get_pr_description_report(repo, pr, run_analysis_if_missing?)`
+
+Devuelve un reporte en markdown listo para incluir en la **descripción del PR** (o en un comentario). Incluye: sección "Testing quality", tabla de métricas (score, coverage, ratio, tests añadidos) y, si existe, el análisis de IA (`ai_report`).
+
+- Si las métricas ya están en storage, usa esas y devuelve el markdown sin volver a analizar.
+- Si no hay métricas y `run_analysis_if_missing` es `true` (por defecto), ejecuta `analyze_pr` y luego genera el markdown.
+
+### Ejemplo de respuesta (éxito)
+
+```json
+{
+  "markdown": "## Testing quality\n\n| Metric | Value |\n|--------|-------|\n| Quality score | 7.7 / 10 (Good) |\n| Coverage (est.) | 80% |\n...",
+  "from_cache": true
+}
+```
+
+### Ejemplo de respuesta (error)
+
+```json
+{
+  "error": "No metrics for this PR. Run analyze_pr first or ensure run_analysis_if_missing is True."
+}
+```
+
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| `markdown` | string | Bloque markdown listo para pegar en la descripción del PR |
+| `from_cache` | bool | True si se usaron métricas ya guardadas; false si se ejecutó analyze_pr |
+| `error` | string | *(Solo en error)* Mensaje indicando que no hay métricas o fallo |
 
 ---
 

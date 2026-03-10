@@ -32,5 +32,8 @@ class Settings(BaseSettings):
     sonar_url: str = "https://sonarcloud.io"
     sonar_project_key: str = ""  # defaults to org_repo if empty
 
+    # Optional: require API key for remote MCP SSE (set MCP_AUTH_SECRET; clients use Authorization: Bearer <secret> or X-API-Key: <secret>)
+    mcp_auth_secret: str = ""
+
 
 settings = Settings()
