@@ -27,8 +27,13 @@ class StorageBackend(ABC):
         """Persist a PRMetrics record, overwriting any existing one."""
 
     @abstractmethod
-    def load(self, pr_number: int) -> Optional[PRMetrics]:
-        """Return metrics for a given PR number, or None if not found."""
+    def load(self, pr_number: int, repo: Optional[str] = None) -> Optional[PRMetrics]:
+        """Return metrics for a given PR number (and optionally repo), or None.
+
+        When ``repo`` is provided, the lookup uses the composite key
+        ``(repo, pr_number)`` for accuracy in multi-repo scenarios.
+        When omitted, falls back to pr_number-only (legacy behaviour).
+        """
 
     @abstractmethod
     def load_all(self) -> list[PRMetrics]:
@@ -40,39 +45,80 @@ class StorageBackend(ABC):
 # ---------------------------------------------------------------------------
 
 class JSONStorage(StorageBackend):
-    """Stores each PR as a separate JSON file under ``directory/``."""
+    """Stores each PR as a separate JSON file under ``directory/``.
+
+    File naming uses a composite key ``{repo_slug}__pr_{number}.json`` so
+    PRs from different repos never collide.  Legacy files (``pr_N.json``)
+    are still found by ``load`` and ``load_all`` for backward compatibility.
+    """
 
     def __init__(self, directory: str = "metrics") -> None:
         self._dir = Path(directory)
         self._dir.mkdir(exist_ok=True)
 
-    def save(self, metrics: PRMetrics) -> None:
-        path = self._dir / f"pr_{metrics.pr_number}.json"
-        path.write_text(metrics.model_dump_json(indent=2), encoding="utf-8")
+    @staticmethod
+    def _repo_slug(repo: str) -> str:
+        """Turn 'org/repo' into 'org__repo' (safe for filenames)."""
+        return repo.replace("/", "__")
 
-    def load(self, pr_number: int) -> Optional[PRMetrics]:
-        path = self._dir / f"pr_{pr_number}.json"
-        if not path.exists():
-            return None
+    def _composite_path(self, repo: str, pr_number: int) -> Path:
+        return self._dir / f"{self._repo_slug(repo)}__pr_{pr_number}.json"
+
+    def _legacy_path(self, pr_number: int) -> Path:
+        return self._dir / f"pr_{pr_number}.json"
+
+    def save(self, metrics: PRMetrics) -> None:
+        path = self._composite_path(metrics.repo, metrics.pr_number)
+        path.write_text(metrics.model_dump_json(indent=2), encoding="utf-8")
+        # Remove legacy file if it exists to avoid duplicates
+        legacy = self._legacy_path(metrics.pr_number)
+        if legacy.exists() and legacy != path:
+            try:
+                legacy.unlink()
+            except OSError:
+                pass
+
+    def load(self, pr_number: int, repo: Optional[str] = None) -> Optional[PRMetrics]:
+        # Try composite path first when repo is known
+        if repo:
+            path = self._composite_path(repo, pr_number)
+            if path.exists():
+                return self._read(path)
+        # Fallback: legacy path
+        legacy = self._legacy_path(pr_number)
+        if legacy.exists():
+            return self._read(legacy)
+        # Last resort: scan for any file ending with __pr_{N}.json
+        for p in self._dir.glob(f"*__pr_{pr_number}.json"):
+            result = self._read(p)
+            if result:
+                return result
+        return None
+
+    def load_all(self) -> list[PRMetrics]:
+        records: list[PRMetrics] = []
+        seen: set[tuple[str, int]] = set()
+        for p in sorted(self._dir.glob("*.json")):
+            m = self._read(p)
+            if m:
+                key = (m.repo, m.pr_number)
+                if key not in seen:
+                    seen.add(key)
+                    records.append(m)
+        return records
+
+    def path_for(self, pr_number: int, repo: Optional[str] = None) -> Path:
+        """Return the file path for a PR (used by MetricsEngine for display)."""
+        if repo:
+            return self._composite_path(repo, pr_number)
+        return self._legacy_path(pr_number)
+
+    def _read(self, path: Path) -> Optional[PRMetrics]:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             return PRMetrics.model_validate(data)
         except Exception:
             return None
-
-    def load_all(self) -> list[PRMetrics]:
-        records: list[PRMetrics] = []
-        for p in sorted(self._dir.glob("pr_*.json")):
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-                records.append(PRMetrics.model_validate(data))
-            except Exception:
-                continue
-        return records
-
-    def path_for(self, pr_number: int) -> Path:
-        """Return the file path for a PR (used by MetricsEngine for display)."""
-        return self._dir / f"pr_{pr_number}.json"
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +127,7 @@ class JSONStorage(StorageBackend):
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS pr_metrics (
-    pr_number                INTEGER PRIMARY KEY,
+    pr_number                INTEGER NOT NULL,
     repo                     TEXT    NOT NULL,
     author                   TEXT    NOT NULL,
     title                    TEXT    NOT NULL,
@@ -105,7 +151,8 @@ CREATE TABLE IF NOT EXISTS pr_metrics (
     test_types_e2e           INTEGER NOT NULL DEFAULT 0,
     test_types_unknown       INTEGER NOT NULL DEFAULT 0,
     raw_json                 TEXT    NOT NULL,
-    created_at               TEXT    NOT NULL DEFAULT (datetime('now'))
+    created_at               TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (repo, pr_number)
 );
 """
 
@@ -113,6 +160,9 @@ CREATE TABLE IF NOT EXISTS pr_metrics (
 _MIGRATIONS = [
     "ALTER TABLE pr_metrics ADD COLUMN testing_quality_score REAL NOT NULL DEFAULT 0",
 ]
+
+# If old table has INTEGER PRIMARY KEY on pr_number only, we recreate with composite PK.
+# Handled in _init_db via a check + copy approach.
 
 
 class SQLiteStorage(StorageBackend):
@@ -159,11 +209,17 @@ class SQLiteStorage(StorageBackend):
                 row,
             )
 
-    def load(self, pr_number: int) -> Optional[PRMetrics]:
+    def load(self, pr_number: int, repo: Optional[str] = None) -> Optional[PRMetrics]:
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT raw_json FROM pr_metrics WHERE pr_number = ?", (pr_number,)
-            ).fetchone()
+            if repo:
+                row = conn.execute(
+                    "SELECT raw_json FROM pr_metrics WHERE repo = ? AND pr_number = ?",
+                    (repo, pr_number),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT raw_json FROM pr_metrics WHERE pr_number = ?", (pr_number,)
+                ).fetchone()
         if row is None:
             return None
         try:
@@ -196,6 +252,30 @@ class SQLiteStorage(StorageBackend):
                     conn.execute(migration)
                 except sqlite3.OperationalError:
                     pass  # column already exists — safe to ignore
+            self._migrate_to_composite_pk(conn)
+
+    def _migrate_to_composite_pk(self, conn: sqlite3.Connection) -> None:
+        """If the old schema used INTEGER PRIMARY KEY on pr_number, migrate to (repo, pr_number)."""
+        try:
+            info = conn.execute("PRAGMA table_info(pr_metrics)").fetchall()
+            pk_col = next((r for r in info if r["name"] == "pr_number"), None)
+            if pk_col and pk_col["pk"] == 1:
+                # Old schema (pr_number is sole PK). Rebuild with composite PK.
+                conn.execute("ALTER TABLE pr_metrics RENAME TO _pr_metrics_old")
+                conn.execute(_CREATE_TABLE)
+                cols = ", ".join(r["name"] for r in info if r["name"] in {
+                    "pr_number", "repo", "author", "title", "pr_date",
+                    "jira_ticket", "jira_issue_type", "jira_status", "jira_priority",
+                    "files_changed", "lines_modified", "lines_covered", "change_coverage",
+                    "production_lines_added", "test_lines_added",
+                    "overall_coverage", "test_code_ratio", "testing_quality_score",
+                    "tests_added", "test_types_unit", "test_types_integration",
+                    "test_types_e2e", "test_types_unknown", "raw_json", "created_at",
+                })
+                conn.execute(f"INSERT OR IGNORE INTO pr_metrics ({cols}) SELECT {cols} FROM _pr_metrics_old")
+                conn.execute("DROP TABLE _pr_metrics_old")
+        except Exception:
+            pass
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path)

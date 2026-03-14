@@ -172,11 +172,11 @@ class MetricsEngine:
         """Persist metrics via the configured storage backend."""
         self._storage.save(metrics)
         if hasattr(self._storage, "path_for"):
-            return self._storage.path_for(metrics.pr_number)  # type: ignore[attr-defined]
+            return self._storage.path_for(metrics.pr_number, repo=metrics.repo)  # type: ignore[attr-defined]
         return f"metrics/pr_{metrics.pr_number}"
 
-    def load_pr_metrics(self, pr_number: int) -> Optional[PRMetrics]:
-        return self._storage.load(pr_number)
+    def load_pr_metrics(self, pr_number: int, repo: Optional[str] = None) -> Optional[PRMetrics]:
+        return self._storage.load(pr_number, repo=repo)
 
     def load_all_metrics(self) -> list[PRMetrics]:
         return self._storage.load_all()

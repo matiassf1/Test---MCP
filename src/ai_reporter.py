@@ -26,7 +26,7 @@ Produce exactly these sections in order. Use the headings below.
 
 ### 1. Summary (2–3 sentences)
 
-State whether the PR's tests are sufficient for merge, what is already well covered, and the main gap(s). Include the **Testing Quality Score (0–10)** and, if available, **coverage** (mechanic or AI-estimated).
+State whether the PR's tests are sufficient for merge, what is already well covered, and the main gap(s). Include the **Testing Quality Score (0–10)** and, if available, **coverage** (mechanic or AI-estimated). **Use only the exact precomputed score number** (e.g. 9.3, 7.2) — never write "10", "10/10", or "perfect score" unless the precomputed score is exactly 10.0.
 
 ### 2. Metrics table
 
@@ -39,32 +39,44 @@ If you have numeric inputs, render a table. **Test/Code ratio** = (test lines ad
 | Coverage (if available) | X% (or "N/A – no CI data") |
 | Tests added / modified | N unit, M integration (if applicable) |
 
-### 3. Testing Integrity Assessment
+### 3. Scope vs ticket
+
+Compare the **PR changes** (files and behaviours in the diff) to the **Jira ticket** (summary and description when provided). Assess alignment:
+
+- **Aligned**: The changes implement what the ticket describes. Extra work that **complements** the ticket (bugfixes for the same area, minor refactors, code cleanup, related improvements) is **perfectly fine** and should still be classified as Aligned.
+- **Contradicts the ticket**: The ticket asks for A but the PR does the **opposite** or takes an approach that **undermines** the ticket's intent. This is the only case that should be called out as a real problem.
+- If **no ticket or no description** is available, state: "Cannot assess scope — no ticket context." and skip bullets.
+
+**Important**: Adding useful extras (bugfixes, refactors, small improvements) alongside the main scope is **normal and good practice**. Do NOT flag these as problems. Only flag changes that genuinely **contradict** or **work against** what the ticket asks for.
+
+Keep this section short (2–5 bullets). Be generous — flag only actual contradictions, not minor additions or style differences.
+
+### 4. Testing Integrity Assessment
 
 - Which **behaviours and code paths** from the **production diff** are actually exercised by tests? Reference **files and function names** (e.g. `selectLockStatus` in `selectors/index.js`, `mapStateToProps` in `ReconciliationDocumentsButtonContainer.js`).
 - Call out **gaps**: logic or branches in the diff that have no corresponding test (e.g. "branch when `singleItemLockEnabled` is true and `lockStatus` is missing is not asserted"). **Do not claim a gap** for something that is already covered: cross-check the test file content and described behaviours (e.g. if a test "simulates close button click and asserts popover open state", do not say "tests do not simulate user interactions when the popover closes").
 - Be specific: "tests check that the close button exists" is weak; "tests assert that clicking the close button sets popover `open` to false" is strong.
 - **Limit scope**: Only comment on **code that changed in the PR**. Do not demand tests for unchanged or generated code (e.g. protobuf, codegen). If the PR only adds dependencies that are already tested elsewhere, state **"No new tests required for this change"** and do **not** lower the score for that reason.
 
-### 4. Coverage Quality Assessment
+### 5. Coverage Quality Assessment
 
 - For the **changed production files**, which branches, edge cases, or error paths are covered vs uncovered?
 - If coverage data is missing, say so and base the assessment on **code reading** (e.g. "the selector's null/undefined branches are tested; the empty-object branch is not").
 - Again, **reference the diff**: tie each gap to a file/function or line range when possible.
 
-### 5. Test Design Evaluation
+### 6. Test Design Evaluation
 
 - **Positives**: Structure (Arrange–Act–Assert), use of mocks, consistency with the rest of the repo.
 - **Issues**: Over-mocking that hides bugs, missing edge cases, assertions on implementation details instead of behaviour, or tests that would be better as integration tests.
 - **Component vs container**: For props that come from Redux (e.g. `isRecLocked`), recommend tests in the **component** only for prop values and rendered behaviour; recommend tests in the **container** (`mapStateToProps`, selectors) for state shape and selector/output.
 - **Stack**: Assume **Jest + Enzyme**. Do not recommend RTL, userEvent, or E2E unless the ticket or PR explicitly requests them. If a recommendation would require a new testing stack, label it as **out of scope for this PR** or **follow-up**.
 
-### 6. Risk Analysis
+### 7. Risk Analysis
 
 - List **2–4 concrete risks** if tests are missing or weak (e.g. "Popover open state is not reset on close; regressions likely if refactored", "Selector returns wrong shape when `lockStatus` is malformed").
 - Tie each risk to a **code path or dependency** from the diff.
 
-### 7. Testing Recommendations
+### 8. Testing Recommendations
 
 - Provide **3–5 actionable items** only. Each must be **concrete** (e.g. "Add a test in `lockStatus.test.js`: when `state.reconciliations[id].lockStatus` is `{}`, assert result is `{ isLocked: false }`").
 - **Avoid duplicate recommendations:** When suggesting a new test, do not assume the scenario is missing. For any behaviour that might already be covered by the PR's test files, phrase the recommendation as a check: e.g. "Verify that [behaviour] is covered; if not, add…" or "If not already tested, add…". Avoid unconditional "Add a test for [X]" unless the diff and test list clearly show that [X] is absent.
@@ -76,7 +88,8 @@ If you have numeric inputs, render a table. **Test/Code ratio** = (test lines ad
 
 ## Scoring (0–10)
 
-- Use a **single** Testing Quality Score (0–10). If the pipeline provides a precomputed score (e.g. 7.51), **use that value** in the metrics table and in the Summary. Do **not** output a different score (e.g. 8) in the narrative unless you explicitly label it as "Auditor override" and explain why; otherwise the report contradicts the tool.
+- Use a **single** Testing Quality Score (0–10). If the pipeline provides a precomputed score (e.g. 7.51 or 9.30), **use that exact value everywhere**: in the metrics table, in the Summary, and in every section of the report. Do **not** output a different score (e.g. 8 or 10) in the narrative unless you explicitly label it as "Auditor override" and explain why; otherwise the report contradicts the tool.
+- **Critical:** In the entire report (Summary, Integrity, Design, etc.), when you refer to the score, **cite the exact precomputed number** (e.g. "Testing Quality Score of 9.3", "score 7.35/10"). Do **not** write "10", "10/10", "perfect 10", or "perfect score" unless the precomputed score is literally 10.0. Writing "10" when the actual score is 9.3 or 8 makes the report inconsistent and misleading.
 - **0–3 (Poor)**: Critical paths untested; no tests for new logic; high regression risk.
 - **4–5 (Fair)**: Some coverage but clear gaps (e.g. only happy path; no edge cases or container wiring).
 - **6–7 (Good)**: Main behaviours and branches covered; a few edge cases or integration points missing.
@@ -120,6 +133,18 @@ def _build_prompt(m: PRMetrics) -> str:
     if m.jira_issue:
         ji = m.jira_issue
         lines.append(f"Jira: {ji.key} ({ji.issue_type}) — {ji.summary or ''}")
+        # Ticket context for scope alignment (section 3)
+        if ji.summary or ji.description:
+            lines.append("")
+            lines.append("## Jira ticket (scope reference)")
+            if ji.summary:
+                lines.append(f"**Summary:** {ji.summary}")
+            if ji.description:
+                lines.append(f"**Description:**")
+                lines.append(ji.description[:3000] if len(ji.description) > 3000 else ji.description)
+                if len(ji.description) > 3000:
+                    lines.append("… _(truncated)_")
+            lines.append("")
     lines.append(
         f"Context: {m.production_lines_added} prod lines added, "
         f"{m.test_lines_added} test lines added, "
@@ -172,15 +197,17 @@ def _build_prompt(m: PRMetrics) -> str:
     lines.append(
         "Based on the diffs and context above, produce the full PR Testing Audit Report.\n\n"
         "Use exactly these section headings in order:\n"
-        "1. **Summary** (2–3 sentences; include Testing Quality Score 0–10 and coverage if available)\n"
-        "2. **Metrics table** (Quality Score, Test/Code ratio, Coverage, Tests added)\n"
-        "3. **Testing Integrity Assessment**\n"
-        "4. **Coverage Quality Assessment**\n"
-        "5. **Test Design Evaluation**\n"
-        "6. **Risk Analysis**\n"
-        "7. **Testing Recommendations** (3–5 concrete, prioritised, doable in one day)\n\n"
+        "1. **Summary** (2–3 sentences; include the exact Precomputed Testing Quality Score number, e.g. 9.3, and coverage if available)\n"
+        "2. **Metrics table** (use the exact precomputed Quality Score — do not write 10 unless it is 10.0)\n"
+        "3. **Scope vs ticket** (compare PR to Jira ticket; only flag changes that contradict the ticket intent — extras/bugfixes are fine)\n"
+        "4. **Testing Integrity Assessment**\n"
+        "5. **Coverage Quality Assessment**\n"
+        "6. **Test Design Evaluation**\n"
+        "7. **Risk Analysis**\n"
+        "8. **Testing Recommendations** (3–5 concrete, prioritised, doable in one day)\n\n"
         "Start the report with a top-level heading: `# PR Testing Audit Report`. Emit only the markdown; no preamble or commentary. "
-        "Ground every finding in the actual diffs; reference files and function names."
+        "Ground every finding in the actual diffs; reference files and function names. "
+        "Whenever you mention the Testing Quality Score in any section, use the exact precomputed value (e.g. 9.3 or 7.35), never \"10\" or \"perfect score\" unless that value is 10.0."
     )
 
     return "\n".join(lines)
@@ -486,6 +513,120 @@ def try_generate_report(metrics: PRMetrics) -> Optional[str]:
             return None  # Generated/config-only PR — no meaningful analysis possible
 
         return AIReporter().generate_pr_analysis(metrics)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Workflow documentation synthesis (for generate_workflow_docs --ai)
+# ---------------------------------------------------------------------------
+
+_WORKFLOW_SYNTHESIS_PROMPT = """\
+You are a senior engineer writing **workflow documentation** for a feature (Jira Epic). \
+Your audience is an **E2E testing team** that will use this doc to understand the feature and \
+write end-to-end tests. They know nothing about the Jira tickets or internal implementation.
+
+## Your task
+
+Turn the raw material (Epic description, child tickets with descriptions, and PR summaries) \
+into a **clear, narrative document** organized by **user-facing workflows / user stories**.
+
+## Output structure (mandatory)
+
+### 1. Feature overview
+2–4 sentences: what the feature is, why it exists, who it affects.
+
+### 2. Key concepts / glossary
+If the feature introduces domain terms (e.g. "strict sign-off", "preparer", "reviewer"), \
+list them with a one-line definition. Keep it short.
+
+### 3. Core workflows
+This is the main section. Break the feature into **user-facing workflows** (not tickets). \
+Each workflow should read like a user story:
+
+For each workflow:
+- **Title** (short, descriptive — e.g. "Admin enables granular sign-off settings")
+- **User story**: "As a [role], I want [goal], so that [benefit]."
+- **Flow** (numbered steps): what the user does, what the system does.
+- **Rules / constraints**: business rules, edge cases, backward compatibility notes.
+- **Acceptance criteria**: bullet list of verifiable conditions (for E2E tests).
+
+Group related workflows under headings (e.g. "Settings management", "Sign-off validation", \
+"Notifications"). Order from most important to least.
+
+### 4. Edge cases and backward compatibility
+Bullet list of important edge cases, migration notes, feature flag behavior, \
+and what happens when the feature is disabled.
+
+### 5. Repos and components involved
+Brief table or list of repos/services touched and their role. Only for context — \
+the E2E team needs to know where things live, not how they're built.
+
+## Rules
+- Write in **English**.
+- Do **not** reference Jira ticket keys in the workflow narratives (use them only in a \
+  reference appendix at the end if needed).
+- Do **not** dump raw ticket descriptions. Synthesize and rewrite.
+- Use **concrete examples** (e.g. "when the admin toggles 'Preparers must sign off before \
+  reviewers' to ON, then…").
+- Keep it **concise but complete**: every testable behavior should be covered.
+- Output **only the markdown document**. No preamble or commentary.
+"""
+
+
+def synthesize_workflow_doc(
+    epic_key: str,
+    epic_summary: Optional[str],
+    epic_description: Optional[str],
+    children: list[dict],
+    pr_summaries: list[dict],
+) -> Optional[str]:
+    """Use the LLM to synthesize raw Jira + PR data into a user-story-based workflow doc.
+
+    children: list of {key, summary, description, issue_type, status}
+    pr_summaries: list of {repo, pr_number, title, ticket, ai_summary}
+    Returns markdown string or None on failure.
+    """
+    if not _is_ai_enabled():
+        return None
+
+    lines: list[str] = []
+    lines.append(f"# Epic: {epic_key}")
+    if epic_summary:
+        lines.append(f"**Summary:** {epic_summary}")
+    if epic_description:
+        lines.append("")
+        lines.append("## Epic description (from Jira)")
+        lines.append(epic_description[:6000])
+    lines.append("")
+
+    if children:
+        lines.append("## Child tickets")
+        lines.append("")
+        for c in children:
+            lines.append(f"### {c.get('key', '?')} ({c.get('issue_type', '?')}) — {c.get('summary', '?')} [{c.get('status', '?')}]")
+            desc = (c.get("description") or "").strip()
+            if desc:
+                lines.append(desc[:3000])
+            lines.append("")
+
+    if pr_summaries:
+        lines.append("## PR implementation summaries")
+        lines.append("")
+        for pr in pr_summaries:
+            ai = pr.get("ai_summary") or ""
+            lines.append(f"- **#{pr.get('pr_number')}** ({pr.get('repo')}) [{pr.get('ticket', '—')}]: {pr.get('title', '?')}")
+            if ai:
+                lines.append(f"  AI: {ai[:300]}")
+        lines.append("")
+
+    user_content = "\n".join(lines)
+
+    try:
+        return _call_llm([
+            {"role": "system", "content": _WORKFLOW_SYNTHESIS_PROMPT},
+            {"role": "user", "content": user_content},
+        ])
     except Exception:
         return None
 

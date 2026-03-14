@@ -10,6 +10,21 @@ from src.models import JiraIssue
 _TICKET_PATTERN = re.compile(r"\b([A-Z]+-\d+)\b")
 
 
+def _normalize_description(desc: object, max_len: int = 2000) -> Optional[str]:
+    """Strip HTML and truncate description for use in docs/prompts. Shared by fetch_issue and fetch_epic_issues."""
+    if desc is None:
+        return None
+    if isinstance(desc, str):
+        out = re.sub(r"<[^>]+>", " ", desc)
+        out = re.sub(r"\s+", " ", out).strip()
+        return out[:max_len] if out else None
+    if isinstance(desc, dict):
+        raw = desc.get("plain") or desc.get("content") or str(desc)
+        s = raw if isinstance(raw, str) else " ".join(str(x) for x in (raw if isinstance(raw, list) else [raw]))
+        return s[:max_len] if s else None
+    return str(desc)[:max_len]
+
+
 # ---------------------------------------------------------------------------
 # Pure extraction helpers (no network, no credentials required)
 # ---------------------------------------------------------------------------
@@ -73,9 +88,21 @@ class JiraClient:
         try:
             raw = self._raw.issue(issue_key)
             fields = raw.fields
+            desc = getattr(fields, "description", None)
+            if desc is None:
+                pass
+            elif isinstance(desc, str):
+                desc = self._strip_html(desc)[:4000]  # limit for prompt size
+            elif isinstance(desc, dict):
+                # Jira Cloud ADF or similar; flatten to string for prompt
+                raw = desc.get("plain") or desc.get("content") or str(desc)
+                desc = (raw if isinstance(raw, str) else " ".join(str(x) for x in (raw if isinstance(raw, list) else [raw])))[:4000]
+            else:
+                desc = str(desc)[:4000]
             return JiraIssue(
                 key=issue_key,
                 summary=getattr(fields, "summary", None),
+                description=desc or None,
                 issue_type=self._field_name(getattr(fields, "issuetype", None)),
                 status=self._field_name(getattr(fields, "status", None)),
                 priority=self._field_name(getattr(fields, "priority", None)),
@@ -100,6 +127,15 @@ class JiraClient:
         if field_obj is None:
             return None
         return getattr(field_obj, "name", str(field_obj)) or None
+
+    def _strip_html(self, text: str) -> str:
+        """Remove HTML tags and normalize whitespace for use in prompts."""
+        if not text:
+            return ""
+        # Remove tags; collapse whitespace
+        out = re.sub(r"<[^>]+>", " ", text)
+        out = re.sub(r"\s+", " ", out).strip()
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -154,9 +190,11 @@ class JiraService:
             results: list[JiraIssue] = []
             for raw in raw_issues:
                 fields = raw.fields
+                desc = _normalize_description(getattr(fields, "description", None), max_len=2000)
                 results.append(JiraIssue(
                     key=raw.key,
                     summary=getattr(fields, "summary", None),
+                    description=desc,
                     issue_type=self._client._field_name(getattr(fields, "issuetype", None)),
                     status=self._client._field_name(getattr(fields, "status", None)),
                     priority=self._client._field_name(getattr(fields, "priority", None)),

@@ -76,7 +76,7 @@ def get_pr_metrics(
     Returns ``None`` if the PR has not been analyzed yet.
     """
     backend = storage or _default_storage()
-    return backend.load(pr)
+    return backend.load(pr, repo=repo)
 
 
 def get_pr_description_report(

@@ -577,8 +577,6 @@ def cmd_analyze_epic(args: argparse.Namespace) -> int:
     """Given a Jira Epic key, find all child tickets, discover linked PRs, and analyze them."""
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn
 
-    from src.github_service import GitHubService
-    from src.jira_service import JiraService
     from src.pr_analysis_pipeline import PRAnalysisPipeline
     from src.report_generator import ReportGenerator
     from src.storage import create_storage
@@ -592,49 +590,14 @@ def cmd_analyze_epic(args: argparse.Namespace) -> int:
 
     console.rule(f"[bold blue]Epic Analysis — {epic_key} @ {scope}")
 
-    # ---- 1. Fetch Epic metadata + child issues from Jira --------------------
-    jira_svc = JiraService()
-    epic_issue = None
-    child_issues = []
+    # ---- 1. Discover PRs (Jira epic + children, then GitHub search) ---------
+    with console.status(f"Fetching Epic [bold]{epic_key}[/bold] and discovering PRs…"):
+        pr_targets, epic_issue = _discover_epic_prs(epic_key, repo, org)
 
-    if jira_svc.is_available():
-        with console.status(f"Fetching Epic [bold]{epic_key}[/bold] from Jira…"):
-            epic_issue = jira_svc.fetch_issue(epic_key)
-            child_issues = jira_svc.fetch_epic_issues(epic_key)
-
-        if epic_issue:
-            console.print(
-                f"[green]✓[/green] Epic: [bold]{epic_key}[/bold] — {epic_issue.summary or '—'}"
-            )
-        if child_issues:
-            console.print(f"[green]✓[/green] Found {len(child_issues)} child issues in Jira")
-        else:
-            console.print(
-                "[yellow]No child issues found under this Epic "
-                "(Jira may use a different link type — will search GitHub directly).[/yellow]"
-            )
-    else:
+    if epic_issue:
         console.print(
-            "[yellow]Jira not configured — searching GitHub directly for the Epic key.[/yellow]"
+            f"[green]✓[/green] Epic: [bold]{epic_key}[/bold] — {epic_issue.summary or '—'}"
         )
-
-    # ---- 2. Discover PRs via GitHub Search ---------------------------------
-    # Strategy: search for the Epic key itself + each child ticket key
-    gh = GitHubService()
-    ticket_keys = [epic_key] + [ci.key for ci in child_issues]
-    pr_set: dict[tuple[str, int], str] = {}  # (repo, pr_num) → ticket_key
-
-    with console.status("Searching GitHub for linked PRs…"):
-        for key in ticket_keys:
-            try:
-                pairs = gh.get_prs_mentioning_ticket(key, repo=repo, org=org, limit=30)
-                for pair in pairs:
-                    if pair not in pr_set:
-                        pr_set[pair] = key
-            except Exception as exc:
-                console.print(f"  [dim]Search for {key} failed: {exc}[/dim]")
-
-    pr_targets = list(pr_set.keys())  # list of (repo_full_name, pr_number)
     if not pr_targets:
         console.print(
             f"[red]No merged PRs found mentioning {epic_key} or its child tickets.[/red]"
@@ -683,6 +646,220 @@ def cmd_analyze_epic(args: argparse.Namespace) -> int:
         console.print(f"[green]✓[/green] Report written → [bold]{report_path}[/bold]")
     except Exception as exc:
         console.print(f"[yellow]Could not write epic report:[/yellow] {exc}")
+
+    return 0
+
+
+def _discover_epic_prs(
+    epic_key: str,
+    repo: str,
+    org: str,
+) -> tuple[list[tuple[str, int]], object]:
+    """Discover (pr_targets, epic_issue) for an epic. pr_targets = [(repo_full_name, pr_number), ...]."""
+    from src.github_service import GitHubService
+    from src.jira_service import JiraService
+
+    jira_svc = JiraService()
+    epic_issue = None
+    child_issues = []
+
+    if jira_svc.is_available():
+        try:
+            epic_issue = jira_svc.fetch_issue(epic_key)
+            child_issues = jira_svc.fetch_epic_issues(epic_key)
+        except Exception:
+            pass
+
+    gh = GitHubService()
+    ticket_keys = [epic_key] + [ci.key for ci in child_issues]
+    pr_set: dict[tuple[str, int], str] = {}
+
+    for key in ticket_keys:
+        try:
+            pairs = gh.get_prs_mentioning_ticket(key, repo=repo, org=org, limit=30)
+            for pair in pairs:
+                if pair not in pr_set:
+                    pr_set[pair] = key
+        except Exception:
+            pass
+
+    return list(pr_set.keys()), epic_issue
+
+
+def cmd_generate_workflow_docs(args: argparse.Namespace) -> int:
+    """Generate a single Markdown doc of core workflows (Jira Epics), ordered by priority."""
+    from pathlib import Path
+
+    from src.jira_service import JiraService
+    from src.models import JiraIssue, PRMetrics
+    from src.report_generator import ReportGenerator, _extract_ai_summary
+    from src.storage import create_storage
+
+    epics_raw = (getattr(args, "epics", "") or "").strip()
+    if not epics_raw:
+        console.print("[red]--epics is required (comma-separated Epic keys).[/red]")
+        return 1
+    epic_keys = [k.upper().strip() for k in epics_raw.split(",") if k.strip()]
+    if not epic_keys:
+        console.print("[red]No valid Epic keys in --epics.[/red]")
+        return 1
+    output_path = Path(getattr(args, "output", "docs/core-workflows.md"))
+    title = getattr(args, "title", "Core Workflows") or "Core Workflows"
+    intro = getattr(args, "intro", "") or None
+    repo = getattr(args, "repo", "") or ""
+    org = getattr(args, "org", "") or ""
+    storage_backend = getattr(args, "storage", "json")
+
+    jira_svc = JiraService()
+    if not jira_svc.is_available():
+        console.print("[red]Jira is not configured. Set JIRA_URL, JIRA_USERNAME, JIRA_API_TOKEN.[/red]")
+        return 1
+
+    console.rule("[bold blue]Generate workflow docs[/bold blue]")
+    console.print(f"Epics: {', '.join(epic_keys)}")
+    workflows: list[tuple[str, Optional[JiraIssue], list[JiraIssue]]] = []
+    for epic_key in epic_keys:
+        with console.status(f"Fetching [bold]{epic_key}[/bold]…"):
+            epic_issue = jira_svc.fetch_issue(epic_key)
+            child_issues = jira_svc.fetch_epic_issues(epic_key) if jira_svc.is_available() else []
+        workflows.append((epic_key, epic_issue, child_issues))
+        if epic_issue:
+            console.print(f"  [green]✓[/green] {epic_key} — {epic_issue.summary or '—'} ({len(child_issues)} children)")
+        else:
+            console.print(f"  [yellow]![/yellow] {epic_key} — not found or no access")
+
+    prs_by_epic: Optional[dict[str, list[tuple[str, int, str, Optional[str], Optional[str]]]]] = None
+    if repo or org:
+        storage = create_storage(storage_backend)
+        prs_by_epic = {}
+        # Deduplicate: discover once per Epic, cache per (repo, pr_number) to avoid
+        # redundant GitHub API calls and storage lookups when PRs span Epics.
+        pr_cache: dict[tuple[str, int], Optional[PRMetrics]] = {}
+        with console.status("Discovering PRs and loading from storage…"):
+            for epic_key in epic_keys:
+                pr_targets, _ = _discover_epic_prs(epic_key, repo, org)
+                entries: list[tuple[str, int, str, Optional[str], Optional[str]]] = []
+                for r, pn in pr_targets:
+                    key = (r, pn)
+                    if key not in pr_cache:
+                        pr_cache[key] = storage.load(pn, repo=r)
+                    m = pr_cache[key]
+                    title_str = m.title if m else "—"
+                    ticket = m.jira_ticket if m else None
+                    ai_sum = _extract_ai_summary(m.ai_report, max_chars=200) if m and m.ai_report else None
+                    entries.append((r, pn, title_str, ticket, ai_sum))
+                if entries:
+                    prs_by_epic[epic_key] = entries
+        if prs_by_epic:
+            total_prs = sum(len(v) for v in prs_by_epic.values())
+            unique_prs = len(pr_cache)
+            console.print(f"  [green]✓[/green] Found {total_prs} PR(s) ({unique_prs} unique) from storage for Implementation section")
+
+    use_ai = getattr(args, "ai", False)
+
+    if use_ai:
+        from src.ai_reporter import synthesize_workflow_doc
+
+        for epic_key, epic_issue, child_issues in workflows:
+            children_data = [
+                {
+                    "key": c.key,
+                    "summary": c.summary,
+                    "description": c.description,
+                    "issue_type": c.issue_type,
+                    "status": c.status,
+                }
+                for c in child_issues
+            ]
+            pr_data = [
+                {"repo": r, "pr_number": pn, "title": t, "ticket": tk, "ai_summary": ai}
+                for r, pn, t, tk, ai in (prs_by_epic or {}).get(epic_key, [])
+            ]
+            with console.status(f"AI synthesizing workflow doc for [bold]{epic_key}[/bold]…"):
+                md = synthesize_workflow_doc(
+                    epic_key=epic_key,
+                    epic_summary=epic_issue.summary if epic_issue else None,
+                    epic_description=epic_issue.description if epic_issue else None,
+                    children=children_data,
+                    pr_summaries=pr_data,
+                )
+            if md:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(md, encoding="utf-8")
+                console.print(f"[green]Wrote AI-synthesized workflow doc →[/green] {output_path}")
+            else:
+                console.print("[red]AI synthesis failed or AI not configured. Falling back to raw doc.[/red]")
+                reporter = ReportGenerator()
+                reporter.generate_workflow_doc(
+                    workflows, output_path, title=title, intro=intro, prs_by_epic=prs_by_epic
+                )
+                console.print(f"[green]Wrote (raw) →[/green] {output_path}")
+    else:
+        reporter = ReportGenerator()
+        reporter.generate_workflow_doc(
+            workflows, output_path, title=title, intro=intro, prs_by_epic=prs_by_epic
+        )
+        console.print(f"[green]Wrote[/green] {output_path}")
+    return 0
+
+
+def cmd_regenerate_epic_report(args: argparse.Namespace) -> int:
+    """Regenerate only the epic markdown report from stored metrics (no re-analysis)."""
+    from src.report_generator import ReportGenerator
+    from src.storage import create_storage
+
+    epic_key = (getattr(args, "epic", "") or "").upper().strip()
+    repo = getattr(args, "repo", "") or ""
+    org = getattr(args, "org", "") or ""
+    storage_backend = getattr(args, "storage", "json")
+    scope = f"org:{org}" if org else repo
+
+    if not epic_key:
+        console.print("[red]--epic is required.[/red]")
+        return 1
+
+    console.rule(f"[bold blue]Regenerate Epic Report — {epic_key} @ {scope}")
+
+    # ---- 1. Discover PRs (same as analyze_epic) ----------------------------
+    with console.status("Discovering PRs for epic…"):
+        pr_targets, epic_issue = _discover_epic_prs(epic_key, repo, org)
+
+    if not pr_targets:
+        console.print("[red]No PRs found for this epic. Check --repo/--org and Jira.[/red]")
+        return 1
+
+    console.print(f"[green]✓[/green] {len(pr_targets)} PRs linked to epic")
+
+    # ---- 2. Load metrics from storage --------------------------------------
+    storage = create_storage(storage_backend)
+    all_stored = storage.load_all()
+    pr_target_set = set(pr_targets)
+    all_metrics = [m for m in all_stored if (m.repo, m.pr_number) in pr_target_set]
+
+    missing = [(r, n) for r, n in pr_targets if (r, n) not in {(m.repo, m.pr_number) for m in all_metrics}]
+    failed = len(missing)
+
+    if not all_metrics:
+        console.print(
+            "[red]No stored metrics for any of the PRs. Run [bold]analyze_epic[/bold] first.[/red]"
+        )
+        return 1
+
+    if missing:
+        console.print(f"[yellow]Missing metrics for {len(missing)} PRs (will show as failed in report):[/yellow]")
+        for r, n in missing[:10]:
+            console.print(f"  [dim]#{n} {r}[/dim]")
+        if len(missing) > 10:
+            console.print(f"  [dim]… and {len(missing) - 10} more[/dim]")
+
+    # ---- 3. Generate report ------------------------------------------------
+    reporter = ReportGenerator()
+    try:
+        report_path = reporter.generate_epic_report(epic_key, epic_issue, all_metrics, failed)
+        console.print(f"[green]✓[/green] Report written → [bold]{report_path}[/bold]")
+    except Exception as exc:
+        console.print(f"[red]Failed to write report:[/red] {exc}")
+        return 1
 
     return 0
 
@@ -877,6 +1054,48 @@ def build_parser() -> argparse.ArgumentParser:
     _add_storage_arg(p_epic)
     _add_cache_arg(p_epic)
 
+    # regenerate_epic_report
+    p_regen = sub.add_parser(
+        "regenerate_epic_report",
+        help="Regenerate epic markdown report from stored metrics (no re-analysis)",
+    )
+    p_regen.add_argument("--epic", required=True, help="Jira Epic key, e.g. CLOSE-1234")
+    regen_scope = p_regen.add_mutually_exclusive_group(required=True)
+    regen_scope.add_argument("--repo", help="Single GitHub repo, e.g. org/project")
+    regen_scope.add_argument("--org", help="GitHub org — same scope as when you ran analyze_epic")
+    _add_storage_arg(p_regen)
+
+    # generate_workflow_docs
+    p_wf = sub.add_parser(
+        "generate_workflow_docs",
+        help="Generate a single Markdown doc of core workflows (Jira Epics) in priority order",
+    )
+    p_wf.add_argument(
+        "--epics",
+        required=True,
+        help="Comma-separated Epic keys, e.g. CLOSE-8615,OTHER-123",
+    )
+    wf_scope = p_wf.add_mutually_exclusive_group(required=False)
+    wf_scope.add_argument("--repo", help="Single GitHub repo — discover PRs and add Implementation (PRs) from storage")
+    wf_scope.add_argument("--org", help="GitHub org — discover PRs across repos and add Implementation (PRs) from storage")
+    p_wf.add_argument(
+        "--output",
+        default="docs/core-workflows.md",
+        help="Output path for the workflow doc (default: docs/core-workflows.md)",
+    )
+    p_wf.add_argument("--title", default="Core Workflows", help="Document title")
+    p_wf.add_argument(
+        "--intro",
+        default="",
+        help="Optional intro paragraph (replaces default)",
+    )
+    p_wf.add_argument(
+        "--ai",
+        action="store_true",
+        help="Use AI to synthesize a user-story-based workflow doc (requires AI configured)",
+    )
+    _add_storage_arg(p_wf)
+
     # generate_summary
     p_summary = sub.add_parser("generate_summary", help="Generate aggregated team summary")
     repo_group = p_summary.add_mutually_exclusive_group(required=True)
@@ -914,6 +1133,10 @@ def main() -> int:
         return cmd_analyze_author(args)
     elif args.command == "analyze_epic":
         return cmd_analyze_epic(args)
+    elif args.command == "regenerate_epic_report":
+        return cmd_regenerate_epic_report(args)
+    elif args.command == "generate_workflow_docs":
+        return cmd_generate_workflow_docs(args)
     elif args.command == "generate_summary":
         return cmd_generate_summary(args)
 

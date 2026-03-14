@@ -45,6 +45,7 @@ class JiraIssue(BaseModel):
 
     key: str
     summary: Optional[str] = None
+    description: Optional[str] = None   # Ticket body (plain text or stripped HTML); used for scope alignment
     issue_type: Optional[str] = None   # Bug, Story, Task, Epic…
     status: Optional[str] = None       # Open, In Progress, Done…
     priority: Optional[str] = None     # Critical, High, Medium, Low
