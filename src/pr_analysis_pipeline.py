@@ -133,7 +133,7 @@ class PRAnalysisPipeline:
         has_testable_code = len(production_changes) > 0
         is_modification_only = has_testable_code and production_lines_added == 0 and lines_modified > 0
         from src.file_classification import is_contract_only_pr
-        production_paths = [f.path for f in production_changes]
+        production_paths = [f.filename for f in production_changes]
         is_contract_only = is_contract_only_pr(production_paths)
         self.timings["change_analysis"] = (time.perf_counter() - t) * 1000
 
