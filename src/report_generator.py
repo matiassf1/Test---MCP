@@ -44,7 +44,7 @@ class ReportGenerator:
         return md_path, json_path
 
     def _pr_markdown(self, m: PRMetrics) -> str:
-        change_cov_pct = f"{m.change_coverage * 100:.0f}%"
+        change_cov_pct = f"{m.effective_coverage * 100:.0f}%"
         ticket = m.jira_ticket or "—"
         date_str = m.pr_date.strftime("%Y-%m-%d") if m.pr_date else "—"
         types = m.test_types
@@ -412,7 +412,7 @@ class ReportGenerator:
                 issue_type = (
                     m.jira_issue.issue_type if m.jira_issue and m.jira_issue.issue_type else "—"
                 )
-                cov = f"{m.change_coverage * 100:.0f}%"
+                cov = f"{m.effective_coverage * 100:.0f}%"
                 pr_link = f"[#{m.pr_number}](https://github.com/{m.repo}/pull/{m.pr_number})"
                 lines.append(
                     f"| {pr_link} | {m.repo} | {m.author} | {ticket} | {issue_type}"
