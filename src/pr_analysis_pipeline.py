@@ -132,6 +132,9 @@ class PRAnalysisPipeline:
         assertion_count = self._analyzer.count_test_assertions(test_file_changes)
         has_testable_code = len(production_changes) > 0
         is_modification_only = has_testable_code and production_lines_added == 0 and lines_modified > 0
+        from src.file_classification import is_contract_only_pr
+        production_paths = [f.path for f in production_changes]
+        is_contract_only = is_contract_only_pr(production_paths)
         self.timings["change_analysis"] = (time.perf_counter() - t) * 1000
 
         # ---- 4. Coverage ----------------------------------------------
@@ -173,6 +176,9 @@ class PRAnalysisPipeline:
             is_modification_only=is_modification_only,
         )
         metrics.ai_estimated_coverage = diff_coverage
+        if is_contract_only:
+            metrics.is_contract_only = True
+            metrics.testing_quality_score = 7.0
         self.timings["metrics"] = (time.perf_counter() - t) * 1000
 
         # ---- 6. AI report (narrative) + LLM coverage estimate (requires AI_ENABLED or OPENROUTER_API_KEY) ----
@@ -217,6 +223,10 @@ class PRAnalysisPipeline:
                 # Final score: 65% formula (coverage/ratio/pairing) + 35% LLM qualitative opinion
                 blended = 0.65 * metrics.testing_quality_score + 0.35 * metrics.llm_quality_score
                 metrics.testing_quality_score = round(min(max(blended, 0.0), 10.0), 2)
+
+        # Contract-only: keep neutral score (overrides any blend/recompute above)
+        if is_contract_only:
+            metrics.testing_quality_score = 7.0
 
         self.timings["ollama"] = (time.perf_counter() - t) * 1000
 

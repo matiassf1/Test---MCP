@@ -479,11 +479,12 @@ class ReportGenerator:
         needs_work = []
         for m in all_metrics:
             reasons = []
-            if m.has_testable_code and m.tests_added == 0:
+            is_contract = getattr(m, "is_contract_only", False)
+            if not is_contract and m.has_testable_code and m.tests_added == 0:
                 reasons.append("no tests added (testable code)")
-            if m.testing_quality_score < 6.0:
+            if not is_contract and m.testing_quality_score < 6.0:
                 reasons.append("low score (< 6)")
-            if _coverage_for_display(m) < 0.5 and m.has_testable_code:
+            if _coverage_for_display(m) < 0.5 and m.has_testable_code and not is_contract:
                 reasons.append("low estimated coverage")
             scope_raw = _extract_scope_alignment(m.ai_report)
             scope_s = _scope_status(scope_raw) if scope_raw else "unknown"
@@ -649,11 +650,11 @@ class ReportGenerator:
             scope_note = _extract_scope_alignment(m.ai_report, max_chars=800)
             if scope_note:
                 detail_lines.append(f"- **Scope vs ticket:** {scope_note}")
-            if m.has_testable_code and m.tests_added == 0:
+            if not getattr(m, "is_contract_only", False) and m.has_testable_code and m.tests_added == 0:
                 detail_lines.append("- ⚠️ No tests added for testable code.")
-            if m.testing_quality_score < 6.0:
+            if not getattr(m, "is_contract_only", False) and m.testing_quality_score < 6.0:
                 detail_lines.append("- ⚠️ Low score — review test quality or coverage.")
-            if _coverage_for_display(m) < 0.5 and m.has_testable_code:
+            if _coverage_for_display(m) < 0.5 and m.has_testable_code and not getattr(m, "is_contract_only", False):
                 detail_lines.append("- ⚠️ Low estimated coverage.")
             detail_lines.append("")
             lines.extend(detail_lines)
@@ -703,20 +704,34 @@ class ReportGenerator:
                 lines.append(f"| Labels | {', '.join(ji.labels)} |")
             lines.append("")
 
-        # Score display — N/A for config/i18n-only PRs
+        # Score display — N/A for config/i18n-only; neutral for contract-only
         if not m.has_testable_code:
             score_line = "| **Testing Quality Score** | **N/A** _(config/i18n-only PR)_ |"
+        elif getattr(m, "is_contract_only", False):
+            score_line = (
+                "| **Testing Quality Score** | **7.0 / 10** _(contract-only; testing out of scope)_ |"
+            )
         else:
             score_line = f"| **Testing Quality Score** | **{m.testing_quality_score} / 10** ({badge}) |"
 
         pairing_pct = f"{m.test_file_pairing_rate * 100:.0f}%"
         assertion_note = f"{m.assertion_count} lines"
 
+        if getattr(m, "is_contract_only", False):
+            contract_callout = (
+                "\n"
+                "> **Contract-only change.** This PR only adds or modifies API contracts (OpenAPI/schema, generated routes). "
+                "Testing is typically added in follow-up PRs when business logic is implemented. "
+                "Score is neutral (not penalized for no tests).\n"
+            )
+        else:
+            contract_callout = ""
+
         lines += [
             "---",
             "",
             "## Quality Score",
-            "",
+            contract_callout,
             "| Metric | Value |",
             "|--------|-------|",
             score_line,
@@ -758,7 +773,9 @@ class ReportGenerator:
             )
 
         # Show which branch of the quality score formula was used
-        if m.has_testable_code:
+        if getattr(m, "is_contract_only", False):
+            lines.append("| Score basis | Contract-only — testing out of scope for this PR |")
+        elif m.has_testable_code:
             if m.change_coverage > 0.0:
                 lines.append("| Score basis | Real CI coverage |")
             elif m.ai_estimated_coverage is not None:

@@ -73,6 +73,18 @@ It is built as an **MCP (Model Context Protocol) server** so Cursor (or other MC
 
 ---
 
+## Contract-only PRs (API / schema definitions)
+
+PRs that **only** add or change **API contracts** (OpenAPI spec, `domain.oas3.json`, generated route handlers, DTOs, stubs with no business logic) are treated specially:
+
+- **Score:** The tool assigns a **neutral score (7.0)** so they are not penalized for having no tests.
+- **Report:** The PR report shows a callout that this is a contract-only change and that testing is expected in follow-up PRs when business logic is implemented.
+- **Epic reports:** Contract-only PRs are not listed under "Areas for Improvement" for "no tests added" or "low score"; only real test gaps are flagged.
+
+Detection is heuristic: when most of the changed production files are contract/spec or under `generated/`, the PR is classified as contract-only. If your repo uses different paths or naming, the threshold (default 75%) and path patterns can be adjusted in `src/file_classification.py`.
+
+---
+
 ## Possible improvements
 
 | **Scope alignment is heuristic** | The "Scope vs ticket" section in PR reports uses keyword matching to classify as Aligned, Issues, Partial, or No ticket context. In ambiguous cases check the full text in the PR report. |

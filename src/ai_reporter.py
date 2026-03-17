@@ -100,6 +100,17 @@ Do **not** penalise when the PR only adds already-tested dependencies or generat
 
 ---
 
+## Contract-only PRs
+
+If the PR **only** adds or modifies **API contracts** (OpenAPI spec, `domain.oas3.json`, generated route handlers, DTOs, stubs with no business logic), then:
+
+- **Testing is out of scope** for this PR. State clearly that no tests are expected here and that tests will be added in follow-up PRs when business logic is implemented for each route.
+- **Do not recommend** adding unit or integration tests for the contract, route definitions, or generated code.
+- In Summary and Recommendations, say something like: "This is a contract-only change; testing is expected when logic is implemented in later PRs."
+- Use the precomputed score (often neutral, e.g. 7.0) and do not suggest that the PR "needs improvement" solely because there are no tests.
+
+---
+
 ## Formatting
 
 - Use **tables** for metrics and, if useful, file-level coverage.
@@ -153,6 +164,11 @@ def _build_prompt(m: PRMetrics) -> str:
     if m.has_testable_code:
         lines.append(
             f"Precomputed Testing Quality Score: {m.testing_quality_score:.2f} — use this value in the metrics table and in the Summary; do not output a different score unless you label it as 'Auditor override' and explain why."
+        )
+    if getattr(m, "is_contract_only", False):
+        lines.append(
+            "This PR is classified as CONTRACT-ONLY (API/schema definitions, generated routes, stubs). "
+            "Testing is out of scope here; state that tests will be added in follow-up PRs when business logic is implemented. Do not recommend adding tests for the contract."
         )
     lines.append("")
 

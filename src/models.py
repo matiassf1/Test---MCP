@@ -137,6 +137,7 @@ class PRMetrics(BaseModel):
     assertion_count: int = 0              # count of assert/expect/toBe lines in test diffs
     has_testable_code: bool = True        # False for config/i18n-only PRs (no source code changed)
     is_modification_only: bool = False    # True when PR only modifies existing code (no new prod lines)
+    is_contract_only: bool = False        # True when PR is mostly API contract/spec/generated routes (testing out of scope)
 
     # Free-form markdown report from local LLM via Ollama (populated when AI_ENABLED=true)
     ai_report: Optional[str] = None
