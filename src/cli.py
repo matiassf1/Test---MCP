@@ -139,7 +139,13 @@ def cmd_pr_description_report(args: argparse.Namespace) -> int:
 def _print_pr_summary(m) -> None:
     from src.report_generator import _score_badge
 
-    coverage_pct = f"{m.change_coverage * 100:.0f}%"
+    # Prefer AI-estimated coverage when mechanical is 0%
+    cov = m.effective_coverage
+    coverage_pct = f"{cov * 100:.0f}%"
+    coverage_label = (
+        "Coverage (AI est.)" if m.change_coverage == 0 and m.llm_estimated_coverage is not None
+        else "Change Coverage"
+    )
     ticket = m.jira_ticket or "—"
     date_str = m.pr_date.strftime("%Y-%m-%d") if m.pr_date else "—"
     badge = _score_badge(m.testing_quality_score)
@@ -162,7 +168,7 @@ def _print_pr_summary(m) -> None:
     table.add_row("Test lines added", str(m.test_lines_added))
     table.add_row("Test / Code ratio", f"{m.test_code_ratio:.2f}")
     table.add_row("Tests added", str(m.tests_added))
-    table.add_row("Change Coverage", f"[bold green]{coverage_pct}[/bold green]")
+    table.add_row(coverage_label, f"[bold green]{coverage_pct}[/bold green]")
     table.add_row(
         "Testing Quality Score",
         f"[bold yellow]{m.testing_quality_score} / 10[/bold yellow] ({badge})",
