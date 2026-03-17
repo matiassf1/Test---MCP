@@ -73,8 +73,16 @@ Keep this section short (2–5 bullets). Be generous — flag only actual contra
 
 ### 7. Risk Analysis
 
-- List **2–4 concrete risks** if tests are missing or weak (e.g. "Popover open state is not reset on close; regressions likely if refactored", "Selector returns wrong shape when `lockStatus` is malformed").
-- Tie each risk to a **code path or dependency** from the diff.
+Identify **2–5 concrete risks**, ordered from highest to lowest severity. For each risk:
+
+- **Anchor it in the diff**: cite the file, function, or specific line range that introduces the risk. Do not invent risks that have no basis in the actual changes.
+- **Classify the risk type** using one of: `[Regression]`, `[Business Rule]`, `[Edge Case]`, `[Performance]`, `[Security]`, `[Contract]`.
+- **State the failure scenario**: describe the exact condition under which this risk would cause a bug in production (e.g. "When `isWorkflow` is always `true` for Checklist items, the `!isWorkflow` guard in `canPreparerSign` will always block signing — breaking the feature for all users").
+- **Cross-domain porting risks**: If the diff copies or adapts logic from another module (e.g. a guard like `!isWorkflow`, a permission check, a flag comparison), verify that the guard is correct in the **target domain's invariants**. If domain documentation (Confluence) is available and describes invariants for this area, reference it explicitly. If the guard would always be `true` or always `false` given the target domain's constraints, flag it as **HIGH** risk.
+- **Business rule violations**: If test invariants, Jira constraints, or Confluence docs establish that a property always holds in this domain (e.g. "all checklist items are workflow items"), check whether the production code respects that invariant. If it doesn't, flag it.
+- **Missing guard coverage**: If a boolean guard (`if (X)`, `!X`, `X && Y`) in the diff is **not tested for both branches**, call out the untested branch explicitly.
+
+When Confluence domain documentation is provided, reference the relevant page title and the specific rule it establishes to justify the risk rating. Do not pad with generic risks — only list what is genuinely supported by the diff and the available context.
 
 ### 8. Testing Recommendations
 
@@ -219,7 +227,7 @@ def _build_prompt(m: PRMetrics) -> str:
         "4. **Testing Integrity Assessment**\n"
         "5. **Coverage Quality Assessment**\n"
         "6. **Test Design Evaluation**\n"
-        "7. **Risk Analysis**\n"
+        "7. **Risk Analysis** (classify each risk as [Regression]/[Business Rule]/[Edge Case]/[Performance]/[Security]/[Contract]; anchor in diff; reference Confluence domain docs when provided)\n"
         "8. **Testing Recommendations** (3–5 concrete, prioritised, doable in one day)\n\n"
         "Start the report with a top-level heading: `# PR Testing Audit Report`. Emit only the markdown; no preamble or commentary. "
         "Ground every finding in the actual diffs; reference files and function names. "

@@ -128,12 +128,29 @@ class PRAnalysisPipeline:
         self.timings["github_files_and_jira"] = (time.perf_counter() - t) * 1000
 
         # ---- 2b. Confluence docs (optional, requires CONFLUENCE_BASE_URL + CONFLUENCE_TOKEN) ----
+        # Two sources: pages linked from the Jira ticket + domain search based on changed file paths.
         confluence_context = ""
-        if self._confluence and self._confluence.is_available() and jira_ticket:
+        if self._confluence and self._confluence.is_available():
             try:
-                ticket_description = jira_issue.description if jira_issue else ""
-                pages = self._confluence.get_pages_for_ticket(jira_ticket, description=ticket_description or "")
-                confluence_context = build_confluence_context(pages)
+                ticket_pages: list = []
+                domain_pages: list = []
+
+                if jira_ticket:
+                    ticket_description = jira_issue.description if jira_issue else ""
+                    ticket_pages = self._confluence.get_pages_for_ticket(
+                        jira_ticket, description=ticket_description or ""
+                    )
+
+                # Search for domain documentation inferred from changed file paths
+                all_paths = [fc.filename for fc in file_changes]
+                domain_pages = self._confluence.search_pages_for_domain(all_paths)
+
+                # Merge, deduplicating by page_id; ticket pages take priority
+                seen_ids = {p.page_id for p in ticket_pages}
+                extra = [p for p in domain_pages if p.page_id not in seen_ids]
+                all_pages = ticket_pages + extra
+
+                confluence_context = build_confluence_context(all_pages)
             except Exception:
                 pass  # Confluence fetch failure is non-fatal
 

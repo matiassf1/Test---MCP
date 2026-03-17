@@ -128,6 +128,55 @@ class ConfluenceService:
                 pages.append(page)
         return pages
 
+    def search_pages_for_domain(
+        self,
+        file_paths: list[str],
+        max_results: int = 3,
+    ) -> list[ConfluencePage]:
+        """Search Confluence for domain documentation relevant to the changed files.
+
+        Extracts domain keywords from file paths and issues a CQL full-text
+        search. Returns up to ``max_results`` pages, skipping any that fail.
+        Gracefully returns [] when Confluence is not configured.
+        """
+        if not self._enabled or not file_paths:
+            return []
+
+        terms = _domain_terms_from_paths(file_paths)
+        if not terms:
+            return []
+
+        # Build CQL: text ~ "term1" OR text ~ "term2" AND type = page
+        cql_parts = " OR ".join(f'text ~ "{t}"' for t in terms[:3])
+        cql = f"({cql_parts}) AND type = page"
+
+        try:
+            resp = requests.get(
+                f"{self._base_url}/rest/api/content/search",
+                params={"cql": cql, "limit": max_results, "expand": "body.storage"},
+                headers=self._headers(),
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                return []
+            results = resp.json().get("results", [])
+        except Exception as exc:
+            logger.warning("ConfluenceService: domain search failed: %s", exc)
+            return []
+
+        pages: list[ConfluencePage] = []
+        for item in results:
+            try:
+                page_id = str(item["id"])
+                title = item.get("title", f"Page {page_id}")
+                html = (item.get("body") or {}).get("storage", {}).get("value", "")
+                content = _strip_html(html)
+                if content:
+                    pages.append(ConfluencePage(page_id=page_id, title=title, content=content))
+            except Exception:
+                continue
+        return pages
+
     def get_page_content(self, page_id: str) -> Optional[ConfluencePage]:
         """Fetch and return a Confluence page as plain text, or None on failure."""
         if not self._enabled:
@@ -174,6 +223,36 @@ class ConfluenceService:
 # ---------------------------------------------------------------------------
 # Context assembly (task 4.1)
 # ---------------------------------------------------------------------------
+
+def _domain_terms_from_paths(file_paths: list[str], max_terms: int = 6) -> list[str]:
+    """Extract meaningful domain keywords from a list of file paths.
+
+    Strips common noise words and file extensions, returns unique tokens
+    that are likely to match Confluence domain documentation.
+    """
+    import re as _re
+    _NOISE = {
+        "src", "lib", "app", "index", "test", "spec", "tests", "utils",
+        "helpers", "common", "shared", "components", "containers", "pages",
+        "styles", "assets", "config", "types", "constants", "mocks",
+        "js", "ts", "jsx", "tsx", "py", "json", "yaml", "yml", "css",
+        "scss", "md", "txt", "map",
+    }
+    seen: dict[str, int] = {}
+    for path in file_paths:
+        # Split on path separators and camelCase/PascalCase/kebab-case
+        raw = _re.split(r"[/\\._\-]", path)
+        for part in raw:
+            tokens = _re.sub(r"([a-z])([A-Z])", r"\1 \2", part).lower().split()
+            for tok in tokens:
+                tok = tok.strip()
+                if len(tok) > 3 and tok not in _NOISE:
+                    seen[tok] = seen.get(tok, 0) + 1
+
+    # Return most frequent terms (likely the domain module names)
+    ranked = sorted(seen.items(), key=lambda x: -x[1])
+    return [k for k, _ in ranked[:max_terms]]
+
 
 def build_confluence_context(pages: list[ConfluencePage], budget: int = 6000) -> str:
     """Concatenate page content within a character budget, truncating as needed.
