@@ -108,6 +108,13 @@ class PRMetrics(BaseModel):
     lines_modified: int
     lines_covered: int
     change_coverage: float  # 0.0 to 1.0
+
+    @property
+    def effective_coverage(self) -> float:
+        """LLM-estimated coverage when available, CI coverage as fallback."""
+        if self.llm_estimated_coverage is not None:
+            return self.llm_estimated_coverage
+        return self.change_coverage
     production_lines_added: int = 0
     production_lines_modified: int = 0
     test_lines_added: int = 0

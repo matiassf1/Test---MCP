@@ -211,7 +211,7 @@ class MetricsEngine:
                 test_type_distribution={},
             )
 
-        avg_coverage = sum(m.change_coverage for m in pr_metrics_list) / len(pr_metrics_list)
+        avg_coverage = sum(m.effective_coverage for m in pr_metrics_list) / len(pr_metrics_list)
         avg_quality = sum(m.testing_quality_score for m in pr_metrics_list) / len(pr_metrics_list)
         total_tests = sum(m.tests_added for m in pr_metrics_list)
 
@@ -291,7 +291,7 @@ class MetricsEngine:
                 }
             acc = accumulator[m.author]
             acc["prs"] += 1
-            acc["coverage_sum"] += m.change_coverage
+            acc["coverage_sum"] += m.effective_coverage
             acc["quality_sum"] += m.testing_quality_score
             acc["tests_added"] += m.tests_added
             acc["lines_modified"] += m.lines_modified
@@ -327,7 +327,7 @@ class MetricsEngine:
                 }
             r = repos[m.repo]
             r["prs"] += 1
-            r["coverage_sum"] += m.change_coverage
+            r["coverage_sum"] += m.effective_coverage
             r["quality_sum"] += m.testing_quality_score
             r["tests_added"] += m.tests_added
 
@@ -347,7 +347,7 @@ class MetricsEngine:
                 "pr_number": m.pr_number,
                 "repo": m.repo,
                 "date": m.pr_date.isoformat() if m.pr_date else None,
-                "change_coverage": round(m.change_coverage * 100, 1),
+                "change_coverage": round(m.effective_coverage * 100, 1),
                 "testing_quality_score": m.testing_quality_score,
                 "author": m.author,
             }

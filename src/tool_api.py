@@ -161,7 +161,7 @@ def get_author_summary(
             "pr_numbers": [],
         }
 
-    avg_cov = sum(m.change_coverage for m in author_metrics) / len(author_metrics)
+    avg_cov = sum(m.effective_coverage for m in author_metrics) / len(author_metrics)
     avg_quality = sum(m.testing_quality_score for m in author_metrics) / len(author_metrics)
 
     return {
