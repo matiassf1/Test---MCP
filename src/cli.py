@@ -362,8 +362,11 @@ def _print_author_summary(author: str, metrics_list: list) -> None:
     if not metrics_list:
         return
 
-    avg_quality = sum(m.testing_quality_score for m in metrics_list) / len(metrics_list)
-    avg_coverage = sum(m.change_coverage for m in metrics_list) / len(metrics_list)
+    # Exclude contract-only from averages (they use N/A, not a numeric score)
+    scored = [m for m in metrics_list if not getattr(m, "is_contract_only", False)]
+    n = len(scored) or 1
+    avg_quality = sum(m.testing_quality_score for m in scored) / n
+    avg_coverage = sum(m.effective_coverage for m in metrics_list) / len(metrics_list)
     total_tests = sum(m.tests_added for m in metrics_list)
 
     table = Table(box=box.ROUNDED, show_header=True, padding=(0, 1))
@@ -376,15 +379,19 @@ def _print_author_summary(author: str, metrics_list: list) -> None:
 
     for m in sorted(metrics_list, key=lambda x: x.pr_date or "", reverse=True):
         date_str = m.pr_date.strftime("%Y-%m-%d") if m.pr_date else "—"
-        cov = f"{m.change_coverage * 100:.0f}%"
-        badge = _score_badge(m.testing_quality_score)
+        cov = f"{m.effective_coverage * 100:.0f}%"
+        if getattr(m, "is_contract_only", False):
+            score_cell = "Contract-only"
+        else:
+            badge = _score_badge(m.testing_quality_score)
+            score_cell = f"{m.testing_quality_score} ({badge})"
         table.add_row(
             f"#{m.pr_number}",
             m.title[:55] + ("…" if len(m.title) > 55 else ""),
             date_str,
             str(m.tests_added),
             cov,
-            f"{m.testing_quality_score} ({badge})",
+            score_cell,
         )
 
     console.print(

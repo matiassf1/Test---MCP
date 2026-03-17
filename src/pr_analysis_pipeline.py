@@ -132,9 +132,14 @@ class PRAnalysisPipeline:
         assertion_count = self._analyzer.count_test_assertions(test_file_changes)
         has_testable_code = len(production_changes) > 0
         is_modification_only = has_testable_code and production_lines_added == 0 and lines_modified > 0
-        from src.file_classification import is_contract_only_pr
-        production_paths = [f.filename for f in production_changes]
-        is_contract_only = is_contract_only_pr(production_paths)
+        # Contract-only: consider all non-test paths (incl. generated/spec); production_changes
+        # excludes generated, so we'd miss domain.oas3 + generated/ and never flag contract-only.
+        from src.file_classification import is_contract_only_pr, is_test_file
+        all_non_test_paths = [
+            f.filename for f in file_changes
+            if not is_test_file(f.filename) and f.status != "removed"
+        ]
+        is_contract_only = is_contract_only_pr(all_non_test_paths)
         self.timings["change_analysis"] = (time.perf_counter() - t) * 1000
 
         # ---- 4. Coverage ----------------------------------------------

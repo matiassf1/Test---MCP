@@ -36,6 +36,13 @@ def _score_badge(score: float) -> str:
     return "Needs improvement"
 
 
+def _score_display(m: PRMetrics) -> str:
+    """Return score for display: 'Contract-only' when N/A, else the numeric score."""
+    if getattr(m, "is_contract_only", False):
+        return "Contract-only"
+    return str(m.testing_quality_score)
+
+
 def _coverage_for_display(m: PRMetrics) -> float:
     """Return coverage value 0.0–1.0 for reports: prefer AI estimate, fallback to mechanical."""
     if m.llm_estimated_coverage is not None:
@@ -461,7 +468,9 @@ class ReportGenerator:
         failed: int = 0,
     ) -> str:
         total = len(all_metrics)
-        avg_score = round(sum(m.testing_quality_score for m in all_metrics) / total, 2) if total else 0.0
+        scored = [m for m in all_metrics if not getattr(m, "is_contract_only", False)]
+        scored_n = len(scored) or 1
+        avg_score = round(sum(m.testing_quality_score for m in scored) / scored_n, 2)
         # Use AI-estimated coverage only (no mechanical/CI); average across PRs that have it
         cov_values = [_coverage_for_display(m) for m in all_metrics]
         avg_cov = sum(cov_values) / total if total else 0.0
@@ -522,8 +531,9 @@ class ReportGenerator:
             pr_url = f"https://github.com/{m.repo}/pull/{m.pr_number}"
             ticket = m.jira_ticket or "—"
             cov_str = _coverage_display_str(m)
+            score_str = _score_display(m)
             lines.append(
-                f"| [#{m.pr_number}]({pr_url}) | {m.repo} | {ticket} | {cov_str} | {m.testing_quality_score} | {m.tests_added} |"
+                f"| [#{m.pr_number}]({pr_url}) | {m.repo} | {ticket} | {cov_str} | {score_str} | {m.tests_added} |"
             )
 
         # Scope alignment overview (from each PR's "Scope vs ticket" AI section)
@@ -583,7 +593,7 @@ class ReportGenerator:
                 one_line = _extract_ai_summary(m.ai_report, max_chars=600)
                 if one_line:
                     one_line = _sanitize_score_in_text(one_line, m.testing_quality_score)
-                lines.append(f"- **[{ticket}]({pr_url})** — #{m.pr_number} {m.repo} — Score {m.testing_quality_score}, Coverage {cov_str}")
+                lines.append(f"- **[{ticket}]({pr_url})** — #{m.pr_number} {m.repo} — Score {_score_display(m)}, Coverage {cov_str}")
                 if one_line:
                     lines.append(f"  - {one_line}")
                 lines.append("")
@@ -641,7 +651,7 @@ class ReportGenerator:
                 f"- **Title:** {m.title}",
                 f"- **Author:** {m.author}",
                 f"- **Ticket:** {ticket}",
-                f"- **Score:** {m.testing_quality_score} / 10 · **Coverage (AI):** {cov_str} · **Tests added:** {m.tests_added}",
+                f"- **Score:** {_score_display(m)} · **Coverage (AI):** {cov_str} · **Tests added:** {m.tests_added}",
             ]
             ai_sum = _extract_ai_summary(m.ai_report, max_chars=800)
             if ai_sum:
@@ -709,7 +719,7 @@ class ReportGenerator:
             score_line = "| **Testing Quality Score** | **N/A** _(config/i18n-only PR)_ |"
         elif getattr(m, "is_contract_only", False):
             score_line = (
-                "| **Testing Quality Score** | **7.0 / 10** _(contract-only; testing out of scope)_ |"
+                "| **Testing Quality Score** | **N/A** _(contract-only; testing out of scope)_ |"
             )
         else:
             score_line = f"| **Testing Quality Score** | **{m.testing_quality_score} / 10** ({badge}) |"
