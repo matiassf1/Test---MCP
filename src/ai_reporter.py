@@ -492,12 +492,20 @@ class AIReporter:
     Gracefully degrades: returns ``None`` on any failure so the pipeline continues.
     """
 
-    def generate_pr_analysis(self, metrics: PRMetrics) -> Optional[str]:
+    def generate_pr_analysis(
+        self,
+        metrics: PRMetrics,
+        confluence_context: str = "",
+        business_rule_context: object = None,
+    ) -> Optional[str]:
         """Return a markdown-formatted AI analysis string, or None on any failure."""
         try:
+            user_prompt = _build_prompt(metrics)
+            user_prompt = _inject_confluence_context(user_prompt, confluence_context)
+            user_prompt = _inject_business_rule_context(user_prompt, business_rule_context)
             return _call_llm([
                 {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": _build_prompt(metrics)},
+                {"role": "user", "content": user_prompt},
             ])
         except Exception:
             return None
@@ -520,7 +528,109 @@ def _is_ai_enabled() -> bool:
         return False
 
 
-def try_generate_report(metrics: PRMetrics) -> Optional[str]:
+def _inject_confluence_context(prompt: str, context: str) -> str:
+    """Prepend a Business specification context block to the prompt when context is non-empty."""
+    if not context or not context.strip():
+        return prompt
+    block = (
+        "## Business specification context\n\n"
+        f"{context}\n\n"
+        "Validate the implementation against these specifications. "
+        "For each violation or gap found, quote the relevant spec text and the diff line. "
+        "Include a '### Spec vs Implementation' section listing any contradictions as bullets.\n\n"
+    )
+    return block + prompt
+
+
+_BIZ_RULE_BUDGET = 4000
+
+
+def _inject_business_rule_context(prompt: str, context: object) -> str:
+    """Inject business rule detection results into the LLM prompt (4000-char budget)."""
+    if context is None or context.is_empty():  # type: ignore[union-attr]
+        return prompt
+
+    sections: list[tuple[str, str]] = []
+    jira_inv = getattr(context, "jira_invariants", [])
+    test_inv = getattr(context, "test_invariants", [])
+    sibling_refs = getattr(context, "sibling_refs", [])
+    copy_flags = getattr(context, "copy_flags", [])
+
+    if jira_inv:
+        sections.append(("## Jira Domain Constraints", "\n".join(f"- {i}" for i in jira_inv)))
+
+    if test_inv:
+        body = (
+            "\n".join(f"- {i}" for i in test_inv)
+            + "\n\n**Instruction:** Flag any production guard that contradicts these invariants. "
+            "If a guard like `!isWorkflow` exists but tests always pass `isWorkflow=true`, "
+            "include a `### Business Rule Risks` bullet describing the potential mismatch."
+        )
+        sections.append(("## Test-Derived Domain Invariants", body))
+
+    if sibling_refs:
+        parts = [
+            f"### {r.get('module')}/{r.get('relative_path')}\n```\n{r.get('content','')}\n```"
+            for r in sibling_refs
+        ]
+        body = "\n".join(parts) + (
+            "\n\n**Instruction:** Compare these reference implementations to the PR diff. "
+            "Identify guards copied from a sibling module that may not apply in the target domain. "
+            "Include findings in `### Business Rule Risks`."
+        )
+        sections.append(("## Reference Implementations", body))
+
+    if copy_flags:
+        parts = []
+        for flag in copy_flags:
+            guards = flag.get("differing_guards", [])
+            g_str = f" Differing guards: {', '.join(guards)}" if guards else ""
+            parts.append(
+                f"- `{flag.get('source_file')}` ↔ `{flag.get('target_file')}` "
+                f"(similarity {flag.get('similarity', 0):.0%}).{g_str}"
+            )
+        body = "\n".join(parts) + (
+            "\n\n**Instruction:** Evaluate whether the similarity indicates a pattern copied "
+            "without domain adaptation. Include mismatched guards in `### Business Rule Risks`."
+        )
+        sections.append(("## Ported Code Flags", body))
+
+    if not sections:
+        return prompt
+
+    budget = _BIZ_RULE_BUDGET
+    kept: list[tuple[str, str]] = []
+    for header, body in reversed(sections):
+        chunk = f"{header}\n\n{body}\n\n"
+        if len(chunk) <= budget:
+            kept.insert(0, (header, body))
+            budget -= len(chunk)
+        else:
+            available = budget - len(header) - 10
+            if available > 50:
+                kept.insert(0, (header, body[:available] + "\n[truncated]"))
+            budget = 0
+            break
+
+    if not kept:
+        return prompt
+
+    biz_parts = ["## Business Rule Analysis Context\n"]
+    for header, body in kept:
+        biz_parts.append(f"{header}\n\n{body}")
+    biz_parts.append(
+        "\nBased on the above, include a `### Business Rule Risks` section in your report "
+        "listing any domain guard mismatches, invariant violations, or porting issues. "
+        "If no issues found, omit the section.\n"
+    )
+    return "\n".join(biz_parts) + "\n" + prompt
+
+
+def try_generate_report(
+    metrics: PRMetrics,
+    confluence_context: str = "",
+    business_rule_context: object = None,
+) -> Optional[str]:
     """Invoke AIReporter if enabled via config (AI_ENABLED or OPENROUTER_API_KEY); return markdown or None."""
     try:
         if not _is_ai_enabled():
@@ -528,7 +638,11 @@ def try_generate_report(metrics: PRMetrics) -> Optional[str]:
         if not metrics.has_testable_code:
             return None  # Generated/config-only PR — no meaningful analysis possible
 
-        return AIReporter().generate_pr_analysis(metrics)
+        return AIReporter().generate_pr_analysis(
+            metrics,
+            confluence_context=confluence_context,
+            business_rule_context=business_rule_context,
+        )
     except Exception:
         return None
 

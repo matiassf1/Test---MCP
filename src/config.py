@@ -35,5 +35,9 @@ class Settings(BaseSettings):
     # Optional: require API key for remote MCP SSE (set MCP_AUTH_SECRET; clients use Authorization: Bearer <secret> or X-API-Key: <secret>)
     mcp_auth_secret: str = ""
 
+    # Confluence integration (optional — feature disabled when absent)
+    confluence_base_url: str = ""   # e.g. https://yourcompany.atlassian.net/wiki
+    confluence_token: str = ""      # Atlassian personal access token
+
 
 settings = Settings()

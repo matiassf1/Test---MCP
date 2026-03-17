@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
@@ -148,6 +149,30 @@ class PRMetrics(BaseModel):
     llm_estimated_coverage: Optional[float] = None
     # Qualitative 0–10 score from AIAnalyzer (Claude, FloQast-aligned); used to blend with formula score
     llm_quality_score: Optional[float] = None
+
+    # Risk assessment (computed from static heuristics + optional LLM signals)
+    risk_level: Optional[str] = None          # HIGH / MEDIUM / LOW
+    risk_points: int = 0                      # raw score from static heuristics
+    risk_factors: list[str] = Field(default_factory=list)   # human-readable justifications
+    spec_violations: list[str] = Field(default_factory=list)  # LLM-extracted spec vs impl gaps
+
+    # Business rule violation detection
+    copy_flags: list[dict] = Field(default_factory=list)       # near-duplicate code blocks with guard info
+    jira_invariants: list[str] = Field(default_factory=list)   # domain constraints from ticket description
+    test_invariants: list[str] = Field(default_factory=list)   # always-true conditions derived from tests
+    business_rule_risks: list[str] = Field(default_factory=list)  # LLM-extracted business rule risks
+
+
+@dataclass
+class BusinessRuleContext:
+    """Aggregated output from all four business rule detection layers."""
+    copy_flags: list[dict] = field(default_factory=list)
+    jira_invariants: list[str] = field(default_factory=list)
+    test_invariants: list[str] = field(default_factory=list)
+    sibling_refs: list[dict] = field(default_factory=list)
+
+    def is_empty(self) -> bool:
+        return not (self.copy_flags or self.jira_invariants or self.test_invariants or self.sibling_refs)
 
 
 class TeamSummary(BaseModel):

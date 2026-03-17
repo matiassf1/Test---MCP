@@ -111,6 +111,45 @@ def _find_section(text: str, keywords: list[str]) -> Optional[str]:
     return None
 
 
+def _extract_spec_violations(ai_report: Optional[str]) -> list[str]:
+    """Parse bullet items from the '### Spec vs Implementation' section of the AI report."""
+    if not ai_report or not ai_report.strip():
+        return []
+    body = _find_section(ai_report, ["spec", "implementation"])
+    if not body:
+        return []
+    violations: list[str] = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- ") or stripped.startswith("* "):
+            item = stripped[2:].strip()
+            if item and len(item) > 5:
+                violations.append(item)
+    return violations
+
+
+def _extract_business_rule_risks(ai_report: Optional[str]) -> list[str]:
+    """Parse bullet items from the '### Business Rule Risks' section of the AI report."""
+    if not ai_report or not ai_report.strip():
+        return []
+    body = _find_section(ai_report, ["business", "rule"])
+    if not body:
+        return []
+    risks: list[str] = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- ") or stripped.startswith("* "):
+            item = stripped[2:].strip()
+            if item and len(item) > 5:
+                risks.append(item)
+    return risks
+
+
+def _risk_badge(risk_level: Optional[str]) -> str:
+    """Return a short text badge for a risk level."""
+    return {"HIGH": "⚠️ HIGH", "MEDIUM": "🔶 MEDIUM", "LOW": "✅ LOW"}.get(risk_level or "", "")
+
+
 def _extract_ai_summary(ai_report: Optional[str], max_chars: int = 320) -> Optional[str]:
     """Extract the Summary section from an AI audit report."""
     if not ai_report or not ai_report.strip():
@@ -524,16 +563,18 @@ class ReportGenerator:
             "",
             "## PR Table",
             "",
-            "| PR | Repo | Ticket | Coverage (AI) | Score | Tests |",
-            "|----|------|--------|---------------|-------|-------|",
+            "| PR | Repo | Ticket | Coverage (AI) | Score | Risk | BizRules | Tests |",
+            "|----|------|--------|---------------|-------|------|----------|-------|",
         ]
         for m in sorted(all_metrics, key=lambda x: (x.repo, x.pr_number)):
             pr_url = f"https://github.com/{m.repo}/pull/{m.pr_number}"
             ticket = m.jira_ticket or "—"
             cov_str = _coverage_display_str(m)
             score_str = _score_display(m)
+            risk_col = _risk_badge(m.risk_level) if m.risk_level else "—"
+            biz_col = "⚠️" if getattr(m, "business_rule_risks", []) else ""
             lines.append(
-                f"| [#{m.pr_number}]({pr_url}) | {m.repo} | {ticket} | {cov_str} | {score_str} | {m.tests_added} |"
+                f"| [#{m.pr_number}]({pr_url}) | {m.repo} | {ticket} | {cov_str} | {score_str} | {risk_col} | {biz_col} | {m.tests_added} |"
             )
 
         # Scope alignment overview (from each PR's "Scope vs ticket" AI section)
@@ -714,15 +755,17 @@ class ReportGenerator:
                 lines.append(f"| Labels | {', '.join(ji.labels)} |")
             lines.append("")
 
-        # Score display — N/A for config/i18n-only; neutral for contract-only
+        # Score display — N/A for config/i18n-only; neutral for contract-only; append risk badge
+        risk_badge = _risk_badge(m.risk_level)
+        risk_suffix = f" | Risk: {risk_badge}" if risk_badge else ""
         if not m.has_testable_code:
-            score_line = "| **Testing Quality Score** | **N/A** _(config/i18n-only PR)_ |"
+            score_line = f"| **Testing Quality Score** | **N/A** _(config/i18n-only PR)_{risk_suffix} |"
         elif getattr(m, "is_contract_only", False):
             score_line = (
-                "| **Testing Quality Score** | **N/A** _(contract-only; testing out of scope)_ |"
+                f"| **Testing Quality Score** | **N/A** _(contract-only; testing out of scope)_{risk_suffix} |"
             )
         else:
-            score_line = f"| **Testing Quality Score** | **{m.testing_quality_score} / 10** ({badge}) |"
+            score_line = f"| **Testing Quality Score** | **{m.testing_quality_score} / 10** ({badge}){risk_suffix} |"
 
         pairing_pct = f"{m.test_file_pairing_rate * 100:.0f}%"
         assertion_note = f"{m.assertion_count} lines"
@@ -861,6 +904,25 @@ class ReportGenerator:
                 "",
                 m.ai_report,
             ]
+
+        # Risk Signals section (task 6.2) — only for MEDIUM or HIGH
+        if m.risk_level in ("MEDIUM", "HIGH") and m.risk_factors:
+            lines += ["", "---", "", f"## Risk Signals ({_risk_badge(m.risk_level)})", ""]
+            for factor in m.risk_factors:
+                lines.append(f"- {factor}")
+
+        # Spec Violations section
+        if m.spec_violations:
+            lines += ["", "---", "", "## Spec Violations", ""]
+            for v in m.spec_violations:
+                lines.append(f"- {v}")
+
+        # Business Rule Risks section
+        biz_risks = getattr(m, "business_rule_risks", [])
+        if biz_risks:
+            lines += ["", "---", "", "## Business Rule Risks", ""]
+            for risk in biz_risks:
+                lines.append(f"- {risk}")
 
         lines.append("")
         return "\n".join(lines)

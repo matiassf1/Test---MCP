@@ -5,12 +5,18 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 from src.change_analyzer import ChangeAnalyzer
+from src.confluence_service import ConfluenceService, build_confluence_context
+from src.copy_detector import CopyDetector
+from src.cross_repo_fetcher import CrossRepoSiblingFetcher
 from src.github_service import GitHubService
+from src.jira_invariant_extractor import JiraInvariantExtractor
 from src.jira_service import JiraService, extract_ticket
 from src.metrics_engine import MetricsEngine
-from src.models import FileChange, PRMetrics
+from src.models import BusinessRuleContext, FileChange, PRMetrics
+from src.risk_analyzer import compute_risk
 from src.storage import JSONStorage, StorageBackend
 from src.test_detector import TestDetector
+from src.test_invariant_validator import TestInvariantValidator
 
 
 class PRAnalysisPipeline:
@@ -31,6 +37,7 @@ class PRAnalysisPipeline:
         change_analyzer: Optional[ChangeAnalyzer] = None,
         test_detector: Optional[TestDetector] = None,
         storage: Optional[StorageBackend] = None,
+        confluence_service: Optional[ConfluenceService] = None,
         use_cache: bool = False,
         cache_dir: str = ".cache",
         cache_ttl: int = 3600,
@@ -50,6 +57,7 @@ class PRAnalysisPipeline:
         self._detector: TestDetector = test_detector or TestDetector()
         self._storage: StorageBackend = storage or JSONStorage()
         self._engine = MetricsEngine(storage=self._storage)
+        self._confluence: Optional[ConfluenceService] = confluence_service or self._build_confluence_service()
         self.timings: dict[str, float] = {}  # step → elapsed ms (populated after analyze_pr)
 
     # ------------------------------------------------------------------
@@ -119,6 +127,16 @@ class PRAnalysisPipeline:
 
         self.timings["github_files_and_jira"] = (time.perf_counter() - t) * 1000
 
+        # ---- 2b. Confluence docs (optional, requires CONFLUENCE_BASE_URL + CONFLUENCE_TOKEN) ----
+        confluence_context = ""
+        if self._confluence and self._confluence.is_available() and jira_ticket:
+            try:
+                ticket_description = jira_issue.description if jira_issue else ""
+                pages = self._confluence.get_pages_for_ticket(jira_ticket, description=ticket_description or "")
+                confluence_context = build_confluence_context(pages)
+            except Exception:
+                pass  # Confluence fetch failure is non-fatal
+
         # ---- 3. Change analysis (in-memory) ---------------------------
         t = time.perf_counter()
         production_changes = self._analyzer.filter_production_changes(file_changes)
@@ -184,6 +202,31 @@ class PRAnalysisPipeline:
         if is_contract_only:
             metrics.is_contract_only = True
             metrics.testing_quality_score = 7.0
+
+        # ---- 5b. Risk scoring (always runs, no AI key needed) ---------
+        from src.file_classification import is_test_file as _is_test_file
+        prod_diff = "\n".join(
+            fc.patch for fc in file_changes
+            if fc.patch and not _is_test_file(fc.filename)
+        )
+        test_diff = "\n".join(
+            fc.patch for fc in file_changes
+            if fc.patch and _is_test_file(fc.filename)
+        )
+        risk_level, risk_points, risk_factors = compute_risk(metrics, prod_diff, test_diff)
+        metrics.risk_level = risk_level
+        metrics.risk_points = risk_points
+        metrics.risk_factors = risk_factors
+
+        # ---- 5c. Business rule violation detection (all layers, no AI key needed) ----
+        biz_context = self._run_business_rule_detection(
+            file_changes=file_changes,
+            jira_issue=jira_issue,
+        )
+        metrics.copy_flags = biz_context.copy_flags
+        metrics.jira_invariants = biz_context.jira_invariants
+        metrics.test_invariants = biz_context.test_invariants
+
         self.timings["metrics"] = (time.perf_counter() - t) * 1000
 
         # ---- 6. AI report (narrative) + LLM coverage estimate (requires AI_ENABLED or OPENROUTER_API_KEY) ----
@@ -199,7 +242,11 @@ class PRAnalysisPipeline:
             light = False
 
         if not light:
-            metrics.ai_report = try_generate_report(metrics)
+            metrics.ai_report = try_generate_report(
+                metrics,
+                confluence_context=confluence_context,
+                business_rule_context=biz_context,
+            )
         metrics.llm_estimated_coverage = try_estimate_coverage(metrics)
 
         # Recompute quality score whenever LLM coverage is available (preferred over CI)
@@ -233,6 +280,28 @@ class PRAnalysisPipeline:
         if is_contract_only:
             metrics.testing_quality_score = 7.0
 
+        # Extract spec violations, business rule risks, and apply LLM risk upgrade from AI report
+        if metrics.ai_report:
+            from src.report_generator import _extract_spec_violations, _extract_business_rule_risks
+            metrics.spec_violations = _extract_spec_violations(metrics.ai_report)
+            metrics.business_rule_risks = _extract_business_rule_risks(metrics.ai_report)
+            # Upgrade risk level one step if LLM suggests higher risk
+            import re as _re
+            llm_risk_match = _re.search(
+                r"risk[_\s]level[:\s]+([A-Z]+)", metrics.ai_report, _re.IGNORECASE
+            )
+            if llm_risk_match:
+                llm_suggestion = llm_risk_match.group(1).upper()
+                _, _, _ = compute_risk(
+                    metrics, prod_diff, test_diff, llm_risk_suggestion=llm_suggestion
+                )
+                _RANK = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
+                _FROM_RANK = {1: "LOW", 2: "MEDIUM", 3: "HIGH"}
+                current = _RANK.get(metrics.risk_level or "LOW", 1)
+                suggested = _RANK.get(llm_suggestion, 0)
+                if suggested > current:
+                    metrics.risk_level = _FROM_RANK.get(min(current + 1, 3), metrics.risk_level)
+
         self.timings["ollama"] = (time.perf_counter() - t) * 1000
 
         self.timings["total"] = (time.perf_counter() - t_total) * 1000
@@ -245,6 +314,19 @@ class PRAnalysisPipeline:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _build_confluence_service(self) -> Optional[ConfluenceService]:
+        """Build a ConfluenceService from settings; returns None if not configured."""
+        try:
+            from src.config import settings
+            if settings.confluence_base_url and settings.confluence_token:
+                return ConfluenceService(
+                    base_url=settings.confluence_base_url,
+                    token=settings.confluence_token,
+                )
+        except Exception:
+            pass
+        return None
 
     def _build_jira_service(self) -> Optional[JiraService]:
         """Lazily build a JiraService; return None if not configured."""
@@ -265,3 +347,60 @@ class PRAnalysisPipeline:
             return JestRunner(repo_path).get_coverage(file_changes)
         except Exception:
             return None
+
+    def _run_business_rule_detection(
+        self,
+        file_changes: list[FileChange],
+        jira_issue: Optional[object],
+    ) -> "BusinessRuleContext":
+        """Run all four business rule violation detection layers.
+
+        Each layer is isolated in a try/except — a single layer failure never
+        aborts the pipeline.  Returns a ``BusinessRuleContext`` with whatever
+        signals were collected.
+        """
+        copy_flags: list[dict] = []
+        jira_invariants: list[str] = []
+        test_invariants: list[str] = []
+        sibling_refs: list[dict] = []
+
+        # Layer 1: intra-PR copy detection
+        try:
+            copy_flags = CopyDetector().detect(file_changes)
+        except Exception:
+            pass
+
+        # Layer 2: Jira description invariant extraction
+        try:
+            if jira_issue is not None:
+                description = getattr(jira_issue, "description", None) or ""
+                summary = getattr(jira_issue, "summary", None) or ""
+                ctx = JiraInvariantExtractor().extract(description, summary)
+                if ctx.has_porting_signal:
+                    jira_invariants = ctx.invariants
+        except Exception:
+            pass
+
+        # Layer 3: cross-repo sibling context
+        try:
+            from src.config import settings
+            if getattr(settings, "enable_cross_repo_siblings", True):
+                sibling_refs = CrossRepoSiblingFetcher(self._gh).fetch(file_changes)
+        except Exception:
+            pass
+
+        # Layer 4: test-derived invariant validation
+        try:
+            from src.config import settings
+            if getattr(settings, "enable_test_invariants", True):
+                threshold = getattr(settings, "test_invariant_threshold", 0.8)
+                test_invariants = TestInvariantValidator(threshold=threshold).extract(file_changes)
+        except Exception:
+            pass
+
+        return BusinessRuleContext(
+            copy_flags=copy_flags,
+            jira_invariants=jira_invariants,
+            test_invariants=test_invariants,
+            sibling_refs=sibling_refs,
+        )
