@@ -288,6 +288,10 @@ class PRAnalysisPipeline:
                     repo_docs = self._gh.fetch_repository_docs_context(repo)
                 except Exception:
                     pass
+                from src.domain_knowledge_pipeline import load_domain_context
+                from pathlib import Path as _Path
+                _dk_path = _Path(settings.domain_context_path)
+                _domain_ctx = load_domain_context(_dk_path)
                 metrics.workflow_context_analysis = try_contextual_workflow_analysis(
                     metrics,
                     confluence_context=confluence_context or "",
@@ -295,6 +299,7 @@ class PRAnalysisPipeline:
                     repo_docs_markdown=repo_docs,
                     pr_description=description or "",
                     jira_issue=jira_issue,
+                    domain_context=_domain_ctx,
                 )
         except Exception:
             metrics.workflow_context_analysis = None

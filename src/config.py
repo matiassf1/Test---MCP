@@ -47,5 +47,9 @@ class Settings(BaseSettings):
     # Second LLM call: workflow analysis from Jira (ticket+epic), Confluence, repo README/docs + diff
     contextual_workflow_analysis_enabled: bool = True
 
+    # Domain knowledge pipeline output — injected into system prompt when present
+    domain_context_path: str = "domain_context.md"
+    domain_knowledge_dir: str = "domain_knowledge"
+
 
 settings = Settings()

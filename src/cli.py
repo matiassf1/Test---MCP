@@ -699,6 +699,62 @@ def _discover_epic_prs(
     return list(pr_set.keys()), epic_issue
 
 
+def cmd_build_domain_context(args: argparse.Namespace) -> int:
+    """Run the 5-phase Domain Knowledge Pipeline and write domain_context.md."""
+    from pathlib import Path
+
+    from src.domain_knowledge_pipeline import DomainKnowledgePipeline
+
+    repo: str = args.repo
+    jira_project: str = getattr(args, "jira_project", "") or ""
+    confluence_queries_raw: str = getattr(args, "confluence_queries", "") or ""
+    force_refresh: bool = getattr(args, "force_refresh", False)
+
+    confluence_queries = [q.strip() for q in confluence_queries_raw.split(",") if q.strip()]
+
+    console.rule("[bold blue]Domain Knowledge Pipeline[/bold blue]")
+    console.print(f"Repo: [bold]{repo}[/bold]")
+    if jira_project:
+        console.print(f"Jira project: [bold]{jira_project}[/bold]")
+    if confluence_queries:
+        console.print(f"Confluence queries: {', '.join(confluence_queries)}")
+    if force_refresh:
+        console.print("[yellow]Force refresh: re-running all phases[/yellow]")
+
+    pipeline = DomainKnowledgePipeline()
+
+    try:
+        with console.status("Running pipeline (phases 1–3 in parallel, 4–5 sequential)…"):
+            output_path = pipeline.build(
+                repo=repo,
+                jira_project=jira_project,
+                confluence_queries=confluence_queries or None,
+                force_refresh=force_refresh,
+            )
+    except RuntimeError as exc:
+        console.print(f"[red]Pipeline error:[/red] {exc}")
+        return 1
+    except Exception as exc:
+        console.print(f"[red]Unexpected error:[/red] {exc}")
+        return 1
+
+    console.print(f"\n[green]✓[/green] Domain context written → [bold]{output_path}[/bold]")
+    console.print(
+        "\nThe PR analyzer will automatically inject this context when analyzing PRs.\n"
+        "Re-run with [bold]--force-refresh[/bold] to update after significant changes."
+    )
+
+    # Show a preview of the output
+    try:
+        content = Path(output_path).read_text(encoding="utf-8")
+        preview = content[:800] + ("\n…[truncated]" if len(content) > 800 else "")
+        console.print(f"\n[dim]{preview}[/dim]")
+    except Exception:
+        pass
+
+    return 0
+
+
 def cmd_generate_workflow_docs(args: argparse.Namespace) -> int:
     """Generate a single Markdown doc of core workflows (Jira Epics), ordered by priority."""
     from pathlib import Path
@@ -1109,6 +1165,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_storage_arg(p_wf)
 
+    # build_domain_context
+    p_dk = sub.add_parser(
+        "build_domain_context",
+        help="Run the Domain Knowledge Pipeline to mine repo + Confluence + Jira and produce domain_context.md",
+    )
+    p_dk.add_argument("--repo", required=True, help="GitHub repo to mine, e.g. org/project")
+    p_dk.add_argument(
+        "--jira-project",
+        default="",
+        dest="jira_project",
+        help="Jira project key to mine for bug/incident patterns (e.g. CLOSE)",
+    )
+    p_dk.add_argument(
+        "--confluence-queries",
+        default="",
+        dest="confluence_queries",
+        help="Comma-separated Confluence search terms (e.g. 'signoff,checklist,authorization')",
+    )
+    p_dk.add_argument(
+        "--force-refresh",
+        action="store_true",
+        default=False,
+        dest="force_refresh",
+        help="Re-run all phases even if cached intermediate files exist",
+    )
+
     # generate_summary
     p_summary = sub.add_parser("generate_summary", help="Generate aggregated team summary")
     repo_group = p_summary.add_mutually_exclusive_group(required=True)
@@ -1150,6 +1232,8 @@ def main() -> int:
         return cmd_regenerate_epic_report(args)
     elif args.command == "generate_workflow_docs":
         return cmd_generate_workflow_docs(args)
+    elif args.command == "build_domain_context":
+        return cmd_build_domain_context(args)
     elif args.command == "generate_summary":
         return cmd_generate_summary(args)
 

@@ -61,6 +61,7 @@ def try_contextual_workflow_analysis(
     repo_docs_markdown: str = "",
     pr_description: str = "",
     jira_issue: Optional[JiraIssue] = None,
+    domain_context: str = "",
 ) -> Optional[str]:
     """Return markdown analysis, a skip message, or None if AI is unavailable."""
     from src.ai_reporter import _call_llm, _is_ai_enabled
@@ -123,9 +124,30 @@ def try_contextual_workflow_analysis(
             blocks.append(f"```diff\n{p}\n```")
 
     user = "\n\n".join(blocks)
+
+    # Inject pre-built domain context into the system prompt when available.
+    # The framing matters: the LLM must understand this is authoritative input
+    # for inference, not background reading.
+    system = _SYSTEM
+    if domain_context.strip():
+        domain_block = (
+            "\n\n---\n\n"
+            "## Organizational Domain Context\n\n"
+            "The following DOMAIN CONTEXT was extracted from this organization's codebase, "
+            "documentation, and incident history. Use it to:\n"
+            "- Detect violations of domain invariants\n"
+            "- Identify incorrect cross-module assumptions\n"
+            "- Flag missing role coverage\n"
+            "- Recognize known failure patterns before they reach production\n\n"
+            "Treat every rule in section 2 (DOMAIN INVARIANTS) as a hard constraint. "
+            "Treat every entry in section 6 (KNOWN FAILURE PATTERNS) as a red flag to actively look for.\n\n"
+            + domain_context.strip()
+        )
+        system = _SYSTEM + domain_block
+
     try:
         return _call_llm(
-            [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": user}]
+            [{"role": "system", "content": system}, {"role": "user", "content": user}]
         )
     except Exception:
         return "_Workflow context analysis failed (LLM error)._"
