@@ -230,10 +230,15 @@ class PRAnalysisPipeline:
             fc.patch for fc in file_changes
             if fc.patch and _is_test_file(fc.filename)
         )
-        risk_level, risk_points, risk_factors = compute_risk(metrics, prod_diff, test_diff)
-        metrics.risk_level = risk_level
-        metrics.risk_points = risk_points
-        metrics.risk_factors = risk_factors
+        try:
+            from src.config import settings as _settings
+            from src.shipping_signals import populate_shipping_metadata
+
+            _segs = [s.strip() for s in _settings.legacy_path_segments.split(",") if s.strip()]
+            populate_shipping_metadata(metrics, prod_diff, test_diff, _segs)
+        except Exception:
+            pass
+        # Risk is recomputed after final testing_quality_score (step 6 blend) — see below.
 
         # ---- 5c. Business rule violation detection (all layers, no AI key needed) ----
         biz_context = self._run_business_rule_detection(
@@ -264,6 +269,35 @@ class PRAnalysisPipeline:
                 confluence_context=confluence_context,
                 business_rule_context=biz_context,
             )
+        try:
+            from src.config import settings as _s
+            _cw = getattr(_s, "contextual_workflow_analysis_enabled", True)
+            if _cw and not light:
+                from src.contextual_workflow_analysis import try_contextual_workflow_analysis
+
+                epic_md = ""
+                if jira_ticket:
+                    jsvc = self._jira or self._build_jira_service()
+                    if jsvc and jsvc.is_available():
+                        try:
+                            epic_md = jsvc.fetch_epic_context_markdown(jira_ticket)
+                        except Exception:
+                            pass
+                repo_docs = ""
+                try:
+                    repo_docs = self._gh.fetch_repository_docs_context(repo)
+                except Exception:
+                    pass
+                metrics.workflow_context_analysis = try_contextual_workflow_analysis(
+                    metrics,
+                    confluence_context=confluence_context or "",
+                    epic_markdown=epic_md,
+                    repo_docs_markdown=repo_docs,
+                    pr_description=description or "",
+                    jira_issue=jira_issue,
+                )
+        except Exception:
+            metrics.workflow_context_analysis = None
         metrics.llm_estimated_coverage = try_estimate_coverage(metrics)
 
         # Recompute quality score whenever LLM coverage is available (preferred over CI)
@@ -297,6 +331,15 @@ class PRAnalysisPipeline:
         if is_contract_only:
             metrics.testing_quality_score = 7.0
 
+        # Risk uses final quality score (e.g. role-gap attenuation, auth pairing)
+        (
+            metrics.risk_level,
+            metrics.risk_points,
+            metrics.risk_factors,
+            metrics.risk_breakdown,
+            metrics.risk_context_note,
+        ) = compute_risk(metrics, prod_diff, test_diff)
+
         # Extract spec violations, business rule risks, and apply LLM risk upgrade from AI report
         if metrics.ai_report:
             from src.report_generator import _extract_spec_violations, _extract_business_rule_risks
@@ -309,15 +352,26 @@ class PRAnalysisPipeline:
             )
             if llm_risk_match:
                 llm_suggestion = llm_risk_match.group(1).upper()
-                _, _, _ = compute_risk(
-                    metrics, prod_diff, test_diff, llm_risk_suggestion=llm_suggestion
-                )
                 _RANK = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
                 _FROM_RANK = {1: "LOW", 2: "MEDIUM", 3: "HIGH"}
                 current = _RANK.get(metrics.risk_level or "LOW", 1)
                 suggested = _RANK.get(llm_suggestion, 0)
                 if suggested > current:
                     metrics.risk_level = _FROM_RANK.get(min(current + 1, 3), metrics.risk_level)
+                    metrics.risk_factors.append(
+                        f"LLM suggested higher inherent risk ({llm_suggestion}); level raised one step."
+                    )
+                    if metrics.risk_breakdown:
+                        metrics.risk_breakdown.append(
+                            {"label": "LLM risk escalation", "points": 0}
+                        )
+
+        try:
+            from src.shipping_signals import finalize_ship_summary
+
+            finalize_ship_summary(metrics)
+        except Exception:
+            pass
 
         self.timings["ollama"] = (time.perf_counter() - t) * 1000
 

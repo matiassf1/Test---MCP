@@ -114,6 +114,61 @@ class JiraClient:
         except Exception:
             return None
 
+    def fetch_epic_context_markdown(self, issue_key: str) -> str:
+        """Return markdown for the Epic linked to this issue (parent Epic Link, or issue is Epic).
+
+        Empty string if no epic found or on failure. Uses parent + common Epic Link custom fields.
+        """
+        if not self._raw:
+            return ""
+        try:
+            issue = self._raw.issue(
+                issue_key,
+                fields="summary,description,issuetype,parent,customfield_10014,customfield_10008",
+            )
+            fields = issue.fields
+            itype = (getattr(getattr(fields, "issuetype", None), "name", None) or "").lower()
+
+            def _fmt_epic(raw_epic) -> str:
+                summ = getattr(raw_epic.fields, "summary", "") or ""
+                desc = getattr(raw_epic.fields, "description", None)
+                desc = _normalize_description(desc, max_len=4500) or ""
+                key = raw_epic.key
+                return f"## Jira Epic ({key})\n**{summ}**\n\n{desc}"
+
+            if "epic" in itype:
+                return _fmt_epic(issue)
+
+            candidates: list[str] = []
+            par = getattr(fields, "parent", None)
+            if par and getattr(par, "key", None):
+                candidates.append(par.key)
+            for cf_name in ("customfield_10014", "customfield_10008"):
+                cf = getattr(fields, cf_name, None)
+                if cf is None:
+                    continue
+                k = getattr(cf, "key", None) if not isinstance(cf, str) else None
+                if k:
+                    candidates.append(k)
+                elif isinstance(cf, str) and "-" in cf:
+                    candidates.append(cf.strip())
+
+            seen: set[str] = set()
+            for ek in candidates:
+                if not ek or ek in seen:
+                    continue
+                seen.add(ek)
+                try:
+                    epic = self._raw.issue(ek, fields="summary,description,issuetype")
+                    ename = (getattr(getattr(epic.fields, "issuetype", None), "name", None) or "").lower()
+                    if "epic" in ename:
+                        return _fmt_epic(epic)
+                except Exception:
+                    continue
+            return ""
+        except Exception:
+            return ""
+
     def _connect(self, url: str, username: str, api_token: str):  # type: ignore[return]
         try:
             from jira import JIRA
@@ -174,6 +229,12 @@ class JiraService:
         """Backwards-compatible helper — returns the issue summary string."""
         issue = self.fetch_issue(ticket_key)
         return issue.summary if issue else None
+
+    def fetch_epic_context_markdown(self, issue_key: str) -> str:
+        """Epic summary+description for prompts (delegates to client)."""
+        if not self._client:
+            return ""
+        return self._client.fetch_epic_context_markdown(issue_key)
 
     def fetch_epic_issues(self, epic_key: str) -> list[JiraIssue]:
         """Return all child issues (Stories, Tasks, Bugs, etc.) under an Epic.

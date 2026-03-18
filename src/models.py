@@ -154,6 +154,8 @@ class PRMetrics(BaseModel):
     risk_level: Optional[str] = None          # HIGH / MEDIUM / LOW
     risk_points: int = 0                      # raw score from static heuristics
     risk_factors: list[str] = Field(default_factory=list)   # human-readable justifications
+    risk_breakdown: list[dict] = Field(default_factory=list)  # [{"label": str, "points": int}, ...]
+    risk_context_note: Optional[str] = None   # mitigating / interpretive note for the report
     spec_violations: list[str] = Field(default_factory=list)  # LLM-extracted spec vs impl gaps
 
     # Business rule violation detection
@@ -161,6 +163,17 @@ class PRMetrics(BaseModel):
     jira_invariants: list[str] = Field(default_factory=list)   # domain constraints from ticket description
     test_invariants: list[str] = Field(default_factory=list)   # always-true conditions derived from tests
     business_rule_risks: list[str] = Field(default_factory=list)  # LLM-extracted business rule risks
+
+    # Shipping / legacy (populated in pipeline for reports)
+    feature_flags_in_pr: list[str] = Field(default_factory=list)
+    feature_flags_tested_in_pr: list[str] = Field(default_factory=list)
+    feature_flags_untested: list[str] = Field(default_factory=list)
+    legacy_touched_files: list[str] = Field(default_factory=list)
+    ship_verdict: Optional[str] = None  # SHIP | SHIP_WITH_CONDITIONS | REVIEW | INFORMATIONAL
+    ship_executive_summary: list[str] = Field(default_factory=list)
+
+    # Jira epic + ticket + Confluence + repo docs → workflow-grounded LLM analysis
+    workflow_context_analysis: Optional[str] = None
 
 
 @dataclass

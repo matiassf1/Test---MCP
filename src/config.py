@@ -39,5 +39,13 @@ class Settings(BaseSettings):
     confluence_base_url: str = ""   # e.g. https://yourcompany.atlassian.net/wiki
     confluence_token: str = ""      # Atlassian personal access token
 
+    # Comma-separated path substrings → "legacy surface" in PR reports (case-insensitive)
+    legacy_path_segments: str = (
+        "legacy,deprecated,/v1/,v0/,old-client,__legacy__,/archive/"
+    )
+
+    # Second LLM call: workflow analysis from Jira (ticket+epic), Confluence, repo README/docs + diff
+    contextual_workflow_analysis_enabled: bool = True
+
 
 settings = Settings()

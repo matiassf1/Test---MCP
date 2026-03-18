@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Optional
 
+from src.file_classification import is_test_file
 from src.models import PRMetrics
 
 # ---------------------------------------------------------------------------
@@ -31,35 +33,110 @@ _CONDITIONAL_RE = re.compile(
     re.MULTILINE,
 )
 
+# Roles as standalone tokens in *added* prod lines (reduces noise from removed context)
 _ROLE_RE = re.compile(
     r"\b(preparer|reviewer|ops|admin|sso|superAdmin|auditor|manager|approver|signer)\b",
     re.IGNORECASE,
 )
 
+# Prod dirs where any co-located-folder test file counts as covering new modules
+_CLUSTER_DIRS = frozenset({"helpers", "utils", "lib", "services"})
+
+
 # ---------------------------------------------------------------------------
-# Individual signal detectors
+# Auth / test pairing
 # ---------------------------------------------------------------------------
 
-def _auth_signal(prod_diff: str, files_summary: list) -> tuple[bool, str]:
-    """Detect authorization-related file names or code patterns."""
+
+def _test_paths_in_pr(file_changes: list) -> set[str]:
+    return {fc.filename.replace("\\", "/") for fc in file_changes if is_test_file(fc.filename)}
+
+
+def _auth_flagged_prod_files(file_changes: list) -> list[str]:
+    seen: list[str] = []
+    for fc in file_changes:
+        if is_test_file(fc.filename):
+            continue
+        if _AUTH_FILE_RE.search(fc.filename):
+            p = fc.filename.replace("\\", "/")
+            if p not in seen:
+                seen.append(p)
+    return seen
+
+
+def _prod_module_covered_by_tests(prod_path: str, test_paths: set[str]) -> bool:
+    """True if this prod file has a colocated test OR (in helpers/utils/...) any test in same folder."""
+    p = Path(prod_path.replace("\\", "/"))
+    stem = p.stem
+    parent = p.parent.as_posix()
+    tp_norm = {t.replace("\\", "/") for t in test_paths}
+
+    for suffix in (".test.js", ".test.jsx", ".test.ts", ".test.tsx"):
+        cand = f"{parent}/{stem}{suffix}"
+        if cand in tp_norm:
+            return True
+
+    folder = p.parent.name.lower()
+    if folder in _CLUSTER_DIRS:
+        prefix = parent + "/"
+        for tp in tp_norm:
+            if not tp.startswith(prefix):
+                continue
+            if ".test." in tp or "/__tests__/" in tp:
+                return True
+    return False
+
+
+def _auth_signal(
+    prod_diff: str,
+    files_summary: list,
+    file_changes: list,
+    untested_flags: list[str],
+) -> tuple[int, str]:
+    """Return (points 0–3, evidence string). 0 = not triggered."""
+    auth_prod = _auth_flagged_prod_files(file_changes)
+    test_paths = _test_paths_in_pr(file_changes)
+
+    if auth_prod:
+        covered = sum(1 for f in auth_prod if _prod_module_covered_by_tests(f, test_paths))
+        n = len(auth_prod)
+        if untested_flags:
+            pts = 3
+            detail = f"Authorization-related files modified ({n}): {', '.join(Path(f).name for f in auth_prod[:4])}"
+            if covered == n:
+                detail += " — tests updated in PR, but feature-flag gaps remain"
+            return pts, detail
+
+        if covered >= n:
+            return 2, (
+                f"Authorization-related files modified with matching test updates in this PR "
+                f"({covered}/{n} modules covered: {', '.join(Path(f).name for f in auth_prod[:4])})"
+            )
+        if covered > 0:
+            return 3, (
+                f"Authorization-related files modified; partial test coverage in PR "
+                f"({covered}/{n} modules with tests): {', '.join(Path(f).name for f in auth_prod[:4])}"
+            )
+        return 3, (
+            f"Authorization-related files modified without test files in this PR: "
+            f"{', '.join(Path(f).name for f in auth_prod[:4])}"
+        )
+
     triggered_files = []
     for f in files_summary:
         name = f.get("file", "") if isinstance(f, dict) else getattr(f, "filename", "")
-        if _AUTH_FILE_RE.search(name):
+        if name and _AUTH_FILE_RE.search(name):
             triggered_files.append(name)
-
     if triggered_files:
-        return True, f"Authorization-related files modified: {', '.join(triggered_files[:3])}"
+        return 3, f"Authorization-related files modified: {', '.join(triggered_files[:3])}"
 
     code_hits = len(_AUTH_CODE_RE.findall(prod_diff))
     if code_hits >= 3:
-        return True, f"Authorization patterns detected in diff ({code_hits} occurrences)"
-
-    return False, ""
+        return 3, f"Authorization patterns in diff ({code_hits} occurrences)"
+    return 0, ""
 
 
 def _flag_signal(prod_diff: str, test_diff: str) -> list[str]:
-    """Return feature flags present in prod diff but not toggled in test diff."""
     def _extract_flags(text: str) -> set[str]:
         flags: set[str] = set()
         for m in _FLAG_RE.finditer(text):
@@ -73,7 +150,6 @@ def _flag_signal(prod_diff: str, test_diff: str) -> list[str]:
 
 
 def _behavioral_ratio(prod_diff: str) -> float:
-    """Fraction of added lines that contain conditional/branching logic."""
     added = [l for l in prod_diff.split("\n") if l.startswith("+") and not l.startswith("+++")]
     if not added:
         return 0.0
@@ -82,68 +158,91 @@ def _behavioral_ratio(prod_diff: str) -> float:
 
 
 def _role_gap(prod_diff: str, test_diff: str) -> list[str]:
-    """Roles/actors mentioned in production code but absent from test code."""
-    prod_roles = {m.group(1).lower() for m in _ROLE_RE.finditer(prod_diff)}
+    added_prod = "\n".join(
+        ln for ln in prod_diff.split("\n") if ln.startswith("+") and not ln.startswith("+++")
+    )
+    prod_roles = {m.group(1).lower() for m in _ROLE_RE.finditer(added_prod)}
     test_roles = {m.group(1).lower() for m in _ROLE_RE.finditer(test_diff)}
-    return list(prod_roles - test_roles)
+    return sorted(prod_roles - test_roles)
+
+
+def _role_points(role_gaps: list[str], testing_quality_score: float) -> tuple[int, str]:
+    if not role_gaps:
+        return 0, ""
+    n = len(role_gaps)
+    base = 2 if n >= 2 else 1
+    # Strong tests: role tokens often differ between prod helpers and mock users — attenuate
+    if testing_quality_score >= 7.5:
+        base = min(base, 1)
+        msg = (
+            f"Roles in new/changed code not all named in tests: {', '.join(role_gaps)} "
+            f"_(attenuated: quality score {testing_quality_score:.1f} ≥ 7.5 — review if mocks should cover these actors)_"
+        )
+    elif testing_quality_score >= 6.5:
+        base = 1 if n >= 2 else base
+        msg = (
+            f"Roles in new/changed code not all named in tests: {', '.join(role_gaps)} "
+            f"_(partially attenuated given score {testing_quality_score:.1f})_"
+        )
+    else:
+        msg = f"Roles/actors in production not exercised in tests: {', '.join(role_gaps)}"
+    return base, msg
 
 
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
+
 def compute_risk(
     metrics: PRMetrics,
     prod_diff: str,
     test_diff: str,
     llm_risk_suggestion: Optional[str] = None,
-) -> tuple[str, int, list[str]]:
+) -> tuple[str, int, list[str], list[dict], Optional[str]]:
     """Compute risk level from static heuristics, optionally upgraded by LLM signal.
 
     Returns:
-        (risk_level, risk_points, risk_factors)
-        risk_level: "HIGH" | "MEDIUM" | "LOW"
-        risk_points: raw integer score
-        risk_factors: human-readable list of triggered signals
+        risk_level, risk_points, risk_factors, risk_breakdown, risk_context_note
+        risk_breakdown: [{"label": str, "points": int}, ...]
     """
     points = 0
     factors: list[str] = []
+    breakdown: list[dict] = []
+    file_changes = metrics.file_changes or []
+    files_summary = [{"file": fc.filename} for fc in file_changes]
 
-    # Build file list from file_changes (native PRMetrics field)
-    files_summary = [
-        {"file": fc.filename} for fc in (metrics.file_changes or [])
-    ]
-
-    # Auth signal (+3)
-    auth_triggered, auth_evidence = _auth_signal(prod_diff, files_summary)
-    if auth_triggered:
-        points += 3
-        factors.append(auth_evidence)
-
-    # Feature flag gap (+2)
     untested_flags = _flag_signal(prod_diff, test_diff)
+    auth_pts, auth_evidence = _auth_signal(
+        prod_diff, files_summary, file_changes, untested_flags
+    )
+    if auth_pts > 0:
+        points += auth_pts
+        factors.append(auth_evidence)
+        breakdown.append({"label": "Authorization / signoff surface", "points": auth_pts})
+
     if untested_flags:
         points += 2
         factors.append(f"Feature flags without test toggle: {', '.join(untested_flags[:3])}")
+        breakdown.append({"label": "Untested feature flags", "points": 2})
 
-    # Behavioral ratio with low score (+2)
     ratio = _behavioral_ratio(prod_diff)
     if ratio > 0.4 and metrics.testing_quality_score < 6.0:
         points += 2
-        factors.append(
-            f"High behavioral change ratio ({ratio:.0%}) with low quality score ({metrics.testing_quality_score})"
+        msg = (
+            f"High behavioral change ratio ({ratio:.0%}) with low quality score "
+            f"({metrics.testing_quality_score})"
         )
+        factors.append(msg)
+        breakdown.append({"label": "Branching-heavy diff + low test score", "points": 2})
 
-    # Role gap (+1 or +2)
     role_gaps = _role_gap(prod_diff, test_diff)
-    if len(role_gaps) >= 2:
-        points += 2
-        factors.append(f"Roles/actors in production not exercised in tests: {', '.join(role_gaps)}")
-    elif len(role_gaps) == 1:
-        points += 1
-        factors.append(f"Role not exercised in tests: {role_gaps[0]}")
+    rp, role_msg = _role_points(role_gaps, metrics.testing_quality_score)
+    if rp > 0:
+        points += rp
+        factors.append(role_msg)
+        breakdown.append({"label": "Role / actor coverage gap", "points": rp})
 
-    # Static threshold
     if points >= 5:
         level = "HIGH"
     elif points >= 3:
@@ -151,7 +250,18 @@ def compute_risk(
     else:
         level = "LOW"
 
-    # LLM upgrade — one step only, never downgrade (task 3.7)
+    context_note: Optional[str] = None
+    if level in ("MEDIUM", "HIGH") and metrics.testing_quality_score >= 7.0:
+        context_note = (
+            f"**Testing quality is strong ({metrics.testing_quality_score}/10).** "
+            "Heuristic risk reflects *inherent* sensitivity (auth, flags, roles), not necessarily missing tests. "
+            "Use the factor breakdown below to see what drove the score."
+        )
+    elif level == "LOW" and auth_pts >= 2:
+        context_note = (
+            "Authorization-related code is present but test updates in this PR align well with the change."
+        )
+
     if llm_risk_suggestion:
         _RANK = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
         _FROM_RANK = {1: "LOW", 2: "MEDIUM", 3: "HIGH"}
@@ -160,4 +270,4 @@ def compute_risk(
         if suggested > current:
             level = _FROM_RANK.get(min(current + 1, 3), level)
 
-    return level, points, factors
+    return level, points, factors, breakdown, context_note

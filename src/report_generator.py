@@ -150,6 +150,122 @@ def _risk_badge(risk_level: Optional[str]) -> str:
     return {"HIGH": "⚠️ HIGH", "MEDIUM": "🔶 MEDIUM", "LOW": "✅ LOW"}.get(risk_level or "", "")
 
 
+def _heuristic_band_from_points(points: int) -> str:
+    """Risk band from raw points only (before optional LLM one-step upgrade)."""
+    if points >= 5:
+        return "HIGH"
+    if points >= 3:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _ship_verdict_label(verdict: Optional[str]) -> str:
+    return {
+        "SHIP": "🟢 **Ship** — OK to merge under normal CI/review",
+        "SHIP_WITH_CONDITIONS": "🟡 **Ship with conditions** — agree rollout + validation first",
+        "REVIEW": "🔴 **Review before merge** — tests or risk need another pass",
+        "INFORMATIONAL": "⚪ **Informational** — no automated test gate for this PR type",
+    }.get(verdict or "", verdict or "—")
+
+
+def _ship_verdict_short(verdict: Optional[str]) -> str:
+    return {
+        "SHIP": "🟢 Ship",
+        "SHIP_WITH_CONDITIONS": "🟡 Conditions",
+        "REVIEW": "🔴 Review",
+        "INFORMATIONAL": "⚪ N/A",
+    }.get(verdict or "", "—")
+
+
+def _executive_and_shipping_markdown(m: PRMetrics) -> list[str]:
+    """Executive summary, feature-flag inventory, pre-ship checklist, legacy surface."""
+    lines: list[str] = [
+        "---",
+        "",
+        "## Executive summary",
+        "",
+        "| | |",
+        "|---|---|",
+        f"| **Merge recommendation** | {_ship_verdict_label(getattr(m, 'ship_verdict', None))} |",
+        "",
+    ]
+    for item in getattr(m, "ship_executive_summary", None) or []:
+        lines.append(f"- {item}")
+    lines.append("")
+
+    flags = list(getattr(m, "feature_flags_in_pr", None) or [])
+    untested = set(getattr(m, "feature_flags_untested", None) or [])
+    tested = set(getattr(m, "feature_flags_tested_in_pr", None) or [])
+
+    if flags:
+        lines += [
+            "---",
+            "",
+            "## Feature flags (detected in prod diff)",
+            "",
+            "| Flag key | Referenced in test diffs (this PR)? |",
+            "|----------|-------------------------------------|",
+        ]
+        for f in flags[:40]:
+            ok = "✅ Yes" if f in tested else "⚠️ Not in test diffs"
+            lines.append(f"| `{f}` | {ok} |")
+        if len(flags) > 40:
+            lines.append(f"| _…and {len(flags) - 40} more_ | |")
+        lines.append("")
+        lines.append(
+            "_Heuristic only: `featureFlag('…')`, `isEnabled('…')`, `useFeatureFlag('…')`, `FEATURE_*`._"
+        )
+        lines.append("")
+
+    legacy = list(getattr(m, "legacy_touched_files", None) or [])
+    if legacy:
+        try:
+            from src.config import settings as _s
+
+            seg_hint = _s.legacy_path_segments.replace(",", ", ")[:200]
+        except Exception:
+            seg_hint = "(see `legacy_path_segments` in config)"
+        lines += [
+            "---",
+            "",
+            "## Legacy / sensitive paths",
+            "",
+            f"_Paths matching segments: {seg_hint}_",
+            "",
+            "| File |",
+            "|------|",
+        ]
+        for p in legacy[:25]:
+            lines.append(f"| `{p}` |")
+        if len(legacy) > 25:
+            lines.append(f"| _…{len(legacy) - 25} more_ |")
+        lines.append("")
+
+    verdict = getattr(m, "ship_verdict", None)
+    need_checklist = (
+        flags
+        or legacy
+        or verdict in ("SHIP_WITH_CONDITIONS", "REVIEW")
+        or untested
+    )
+    if need_checklist and verdict != "INFORMATIONAL":
+        lines += [
+            "---",
+            "",
+            "## Pre-ship checklist (rollout)",
+            "",
+            "Use when merging to production or enabling flags:",
+            "",
+            "- [ ] **Gradual rollout** — canary or flag ramp; avoid 100% on first cut if risk is MEDIUM+ or flags are untested in tests.",
+            "- [ ] **Monitoring** — errors/latency dashboards for touched modules.",
+            "- [ ] **Rollback** — how to disable flag or revert commit quickly.",
+            "- [ ] **Owner** — named on-call for the first release window after deploy.",
+            "",
+        ]
+
+    return lines
+
+
 def _extract_ai_summary(ai_report: Optional[str], max_chars: int = 320) -> Optional[str]:
     """Extract the Summary section from an AI audit report."""
     if not ai_report or not ai_report.strip():
@@ -563,8 +679,8 @@ class ReportGenerator:
             "",
             "## PR Table",
             "",
-            "| PR | Repo | Ticket | Coverage (AI) | Score | Risk | BizRules | Tests |",
-            "|----|------|--------|---------------|-------|------|----------|-------|",
+            "| PR | Repo | Ticket | Coverage (AI) | Score | Risk | Ship | BizRules | Tests |",
+            "|----|------|--------|---------------|-------|------|------|----------|-------|",
         ]
         for m in sorted(all_metrics, key=lambda x: (x.repo, x.pr_number)):
             pr_url = f"https://github.com/{m.repo}/pull/{m.pr_number}"
@@ -572,9 +688,10 @@ class ReportGenerator:
             cov_str = _coverage_display_str(m)
             score_str = _score_display(m)
             risk_col = _risk_badge(m.risk_level) if m.risk_level else "—"
+            ship_col = _ship_verdict_short(getattr(m, "ship_verdict", None))
             biz_col = "⚠️" if getattr(m, "business_rule_risks", []) else ""
             lines.append(
-                f"| [#{m.pr_number}]({pr_url}) | {m.repo} | {ticket} | {cov_str} | {score_str} | {risk_col} | {biz_col} | {m.tests_added} |"
+                f"| [#{m.pr_number}]({pr_url}) | {m.repo} | {ticket} | {cov_str} | {score_str} | {risk_col} | {ship_col} | {biz_col} | {m.tests_added} |"
             )
 
         # Scope alignment overview (from each PR's "Scope vs ticket" AI section)
@@ -728,6 +845,17 @@ class ReportGenerator:
             f"**Repository:** {m.repo}",
             "",
         ]
+        if getattr(m, "ship_verdict", None):
+            lines.extend(_executive_and_shipping_markdown(m))
+        else:
+            lines += [
+                "---",
+                "",
+                "## Executive summary",
+                "",
+                "> **Merge recommendation:** not in cached metrics — re-run `analyze_change` (or MCP analyze) to populate shipping signals.",
+                "",
+            ]
 
         # Jira metadata block (only when available)
         if m.jira_issue:
@@ -905,9 +1033,58 @@ class ReportGenerator:
                 m.ai_report,
             ]
 
-        # Risk Signals section (task 6.2) — only for MEDIUM or HIGH
-        if m.risk_level in ("MEDIUM", "HIGH") and m.risk_factors:
-            lines += ["", "---", "", f"## Risk Signals ({_risk_badge(m.risk_level)})", ""]
+        wca = getattr(m, "workflow_context_analysis", None) or getattr(
+            m, "domain_risk_analysis", None
+        )
+        if wca and str(wca).strip():
+            lines += [
+                "",
+                "---",
+                "",
+                "## Workflow context analysis",
+                "",
+                str(wca).strip(),
+            ]
+
+        # Risk assessment — MEDIUM/HIGH (or factors present for legacy metrics)
+        if m.risk_level in ("MEDIUM", "HIGH") and (m.risk_factors or getattr(m, "risk_breakdown", None)):
+            lines += ["", "---", "", f"## Risk assessment ({_risk_badge(m.risk_level)})", ""]
+            note = getattr(m, "risk_context_note", None)
+            if note:
+                lines += [note, ""]
+            band = _heuristic_band_from_points(m.risk_points)
+            band_note = ""
+            if m.risk_level and m.risk_level != band:
+                band_note = f" _(heuristic band from points: {band}; final level may differ e.g. after LLM escalation)_"
+            lines += [
+                "_Heuristic scoring: authorization surface, untested flags, branching vs quality score, "
+                "and role tokens in **new** prod lines vs tests. **High score does not mean “bad tests”** — "
+                "auth/signoff changes are inherently sensitive._",
+                "",
+                "| Metric | Value |",
+                "|--------|-------|",
+                f"| Total risk points | **{m.risk_points}** |",
+                f"| Scale | 5+ → HIGH · 3–4 → MEDIUM · under 3 → LOW |",
+                f"| Reported level | {_risk_badge(m.risk_level)}{band_note} |",
+                "",
+            ]
+            br = getattr(m, "risk_breakdown", None) or []
+            if br:
+                lines += [
+                    "### What added points",
+                    "",
+                    "| Factor | +pts |",
+                    "|--------|------|",
+                ]
+                for row in br:
+                    pts = row.get("points", 0)
+                    label = row.get("label", "")
+                    if pts:
+                        lines.append(f"| {label} | **+{pts}** |")
+                    else:
+                        lines.append(f"| {label} | — |")
+                lines.append("")
+            lines += ["### Detail", ""]
             for factor in m.risk_factors:
                 lines.append(f"- {factor}")
 
@@ -957,6 +1134,20 @@ class ReportGenerator:
                 "test_file_pairing_rate": round(m.test_file_pairing_rate, 3),
                 "assertion_count": m.assertion_count,
             },
+            "risk": {
+                "level": m.risk_level,
+                "points": m.risk_points,
+                "breakdown": list(getattr(m, "risk_breakdown", None) or []),
+                "factors": list(m.risk_factors or []),
+                "context_note": getattr(m, "risk_context_note", None),
+            },
+            "shipping": {
+                "verdict": getattr(m, "ship_verdict", None),
+                "executive_summary": list(getattr(m, "ship_executive_summary", None) or []),
+                "feature_flags": list(getattr(m, "feature_flags_in_pr", None) or []),
+                "feature_flags_untested": list(getattr(m, "feature_flags_untested", None) or []),
+                "legacy_touched_files": list(getattr(m, "legacy_touched_files", None) or []),
+            },
             "code_metrics": {
                 "files_changed": m.files_changed,
                 "production_lines_added": m.production_lines_added,
@@ -989,6 +1180,10 @@ class ReportGenerator:
                 },
             },
             "ai_report": m.ai_report,
+            "workflow_context_analysis": getattr(m, "workflow_context_analysis", None),
+            "domain_risk_analysis": getattr(
+                m, "workflow_context_analysis", None
+            ),  # legacy JSON key
         }
 
     # ------------------------------------------------------------------

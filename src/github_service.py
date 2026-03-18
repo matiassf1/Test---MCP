@@ -150,6 +150,59 @@ class GitHubService:
                 pass
         return results
 
+    def fetch_repository_docs_context(self, repo_name: str, max_chars: int = 10000) -> str:
+        """Pull README, CONTRIBUTING, and top-level ``docs/*.md`` from default branch.
+
+        Used to ground workflow analysis in repo-native documentation. Returns empty
+        string on total failure.
+        """
+        from github import GithubException
+
+        try:
+            repo = self._client.get_repo(repo_name)
+            ref = repo.default_branch
+        except Exception:
+            return ""
+
+        parts: list[str] = []
+        used = 0
+
+        def _append(title: str, body: str) -> None:
+            nonlocal used
+            if used >= max_chars or not body.strip():
+                return
+            chunk = f"### {title}\n{body.strip()}"
+            room = max_chars - used - 20
+            if len(chunk) > room:
+                chunk = chunk[:room] + "\n…[truncated]"
+            parts.append(chunk)
+            used += len(chunk)
+
+        for path in ("README.md", "README", "CONTRIBUTING.md", "docs/README.md"):
+            try:
+                c = repo.get_contents(path, ref=ref)
+                if getattr(c, "type", "") == "file" and getattr(c, "decoded_content", None):
+                    _append(path, c.decoded_content.decode("utf-8", errors="replace"))
+            except GithubException:
+                continue
+
+        try:
+            entries = repo.get_contents("docs", ref=ref)
+            if isinstance(entries, list):
+                for ent in sorted(entries, key=lambda x: x.path)[:15]:
+                    if not ent.path.endswith(".md") or ent.type != "file":
+                        continue
+                    try:
+                        fc = repo.get_contents(ent.path, ref=ref)
+                        if fc.decoded_content:
+                            _append(ent.path, fc.decoded_content.decode("utf-8", errors="replace"))
+                    except GithubException:
+                        continue
+        except GithubException:
+            pass
+
+        return "\n\n".join(parts) if parts else ""
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
