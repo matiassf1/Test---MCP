@@ -94,7 +94,11 @@ class JestRunner:
         overall_pct: Optional[float] = None
         total_section = data.get("total", {})
         if "lines" in total_section:
-            overall_pct = total_section["lines"].get("pct")
+            _op = total_section["lines"].get("pct")
+            try:
+                overall_pct = float(_op) if _op is not None else None
+            except (TypeError, ValueError):
+                overall_pct = None
 
         covered = 0
         total = 0
@@ -113,7 +117,11 @@ class JestRunner:
                     continue
                 key_norm = key.replace("\\", "/")
                 if key_norm.endswith(normalized) or normalized.endswith(key_norm):
-                    pct = file_data.get("lines", {}).get("pct", 0.0) / 100.0
+                    _raw_pct = file_data.get("lines", {}).get("pct", 0.0)
+                    try:
+                        pct = float(_raw_pct) / 100.0
+                    except (TypeError, ValueError):
+                        pct = 0.0
                     file_lines = fc.additions
                     covered += round(file_lines * pct)
                     total += file_lines

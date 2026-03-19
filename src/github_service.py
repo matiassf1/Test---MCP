@@ -23,8 +23,12 @@ class GitHubService:
         auth = Auth.Token(resolved_token)
         self._client = Github(auth=auth)
 
+    def get_repository(self, repo_name: str) -> Repository:
+        """PyGithub ``Repository`` for directory/file API (e.g. sibling fetcher)."""
+        return self._client.get_repo(repo_name)
+
     def get_pull_request(self, repo_name: str, pr_number: int) -> PullRequest:
-        repo: Repository = self._client.get_repo(repo_name)
+        repo: Repository = self.get_repository(repo_name)
         return repo.get_pull(pr_number)
 
     def get_author(self, pr: PullRequest) -> str:

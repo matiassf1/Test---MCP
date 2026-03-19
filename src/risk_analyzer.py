@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.file_classification import is_test_file
-from src.models import PRMetrics
+from src.models import DomainRiskSignals, PRMetrics
 
 # ---------------------------------------------------------------------------
 # Pattern definitions
@@ -199,6 +199,7 @@ def compute_risk(
     prod_diff: str,
     test_diff: str,
     llm_risk_suggestion: Optional[str] = None,
+    domain_signals: Optional[DomainRiskSignals] = None,
 ) -> tuple[str, int, list[str], list[dict], Optional[str]]:
     """Compute risk level from static heuristics, optionally upgraded by LLM signal.
 
@@ -243,7 +244,51 @@ def compute_risk(
         factors.append(role_msg)
         breakdown.append({"label": "Role / actor coverage gap", "points": rp})
 
-    if points >= 5:
+    force_high_domain = False
+    if domain_signals and domain_signals.domain_context_loaded:
+        from src.config import settings as _ds
+
+        per = int(getattr(_ds, "domain_hard_signal_points", 2))
+        cap = int(getattr(_ds, "domain_hard_signal_points_cap", 8))
+        try:
+            from src.signal_validator import validated_hard_signals
+
+            hard = validated_hard_signals(domain_signals.signals or [])
+        except Exception:
+            hard = [s for s in (domain_signals.signals or []) if s.is_hard]
+        if hard:
+            raw = sum(min(per, 3) for _ in hard)
+            dom_pts = min(raw, cap)
+            points += dom_pts
+            factors.append(
+                f"Hard domain signals ({len(hard)}) from `domain_context.md` — see Domain Risk Analysis"
+            )
+            breakdown.append({"label": "Domain context (hard heuristics)", "points": dom_pts})
+            if getattr(_ds, "domain_force_high_on_hard_invariant", True):
+                if any(s.type == "invariant_violation" for s in hard):
+                    force_high_domain = True
+        elif (
+            domain_signals.violated_invariants
+            or domain_signals.triggered_failure_patterns
+            or domain_signals.cross_module_concerns
+        ):
+            dom_pts = 0
+            if domain_signals.violated_invariants:
+                dom_pts += min(len(domain_signals.violated_invariants), 3)
+            if domain_signals.triggered_failure_patterns:
+                dom_pts += min(2, len(domain_signals.triggered_failure_patterns))
+            if domain_signals.cross_module_concerns:
+                dom_pts += min(2, len(domain_signals.cross_module_concerns))
+            dom_pts = min(dom_pts, 5)
+            if dom_pts > 0:
+                points += dom_pts
+                breakdown.append({"label": "Domain context (legacy lists)", "points": dom_pts})
+
+    if force_high_domain:
+        level = "HIGH"
+        if points < 5:
+            points = max(points, 5)
+    elif points >= 5:
         level = "HIGH"
     elif points >= 3:
         level = "MEDIUM"

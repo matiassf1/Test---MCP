@@ -25,6 +25,153 @@ _CHILD_TYPE_ORDER: dict[str, int] = {
 }
 
 
+def _domain_risk_analysis_markdown(m: PRMetrics) -> Optional[str]:
+    """Structured Domain Risk Analysis — hard heuristics authoritative over LLM."""
+    drs = getattr(m, "domain_risk_signals", None)
+    if not drs:
+        return None
+    sigs = list(getattr(drs, "signals", None) or [])
+    has_legacy = bool(
+        drs.violated_invariants
+        or drs.triggered_failure_patterns
+        or drs.cross_module_concerns
+        or drs.missing_role_coverage
+        or drs.early_warnings
+    )
+    if not sigs and not has_legacy and not getattr(drs, "heuristic_llm_contradictions", None):
+        return None
+
+    lines = ["## Domain Risk Analysis", ""]
+    lines.append(
+        "_**Precedence:** Hard heuristics (from `domain_context.md` §2/§5/§6) are **candidates** until the "
+        "evidence layer runs. With `DOMAIN_EVIDENCE_VALIDATION_ENABLED=true`, workflow `DOMAIN_STRUCT` can "
+        "**dismiss** false positives; surviving hard signals stay authoritative. `[LLM]` rows remain advisory "
+        "unless promoted by explicit violations in DOMAIN_STRUCT._"
+    )
+    lines.append("")
+
+    if sigs:
+        lines.append("### Structured signals")
+        lines.append("")
+        lines.append("| Type | Source | Hard | Validation | Confidence | Finding |")
+        lines.append("|------|--------|------|------------|------------|---------|")
+        for s in sigs[:28]:
+            hard = "yes" if s.is_hard else "no"
+            vs = getattr(s, "validation_status", "unvalidated")
+            vr = getattr(s, "validation_reason", "") or ""
+            vcell = vs
+            if vr and len(vr) < 90:
+                vcell = f"{vs} — {vr}"
+            elif vr:
+                vcell = f"{vs} — {vr[:80]}…"
+            lines.append(
+                f"| {s.type} | {s.source} | {hard} | {vcell} | {s.confidence:.2f} | "
+                f"{s.description[:160]}{'…' if len(s.description) > 160 else ''} |"
+            )
+        lines.append("")
+    else:
+        lines.append("### Violated invariants")
+        lines.append("")
+        if drs.violated_invariants:
+            lines.extend(f"- {x}" for x in drs.violated_invariants[:25])
+        else:
+            lines.append("_None._")
+        lines.append("")
+        lines.append("### Triggered patterns")
+        lines.append("")
+        if drs.triggered_failure_patterns:
+            lines.extend(f"- {x}" for x in drs.triggered_failure_patterns[:25])
+        else:
+            lines.append("_None._")
+        lines.append("")
+        lines.append("### Cross-module concerns")
+        lines.append("")
+        if drs.cross_module_concerns:
+            lines.extend(f"- {x}" for x in drs.cross_module_concerns[:25])
+        else:
+            lines.append("_None._")
+        lines.append("")
+        lines.append("### Missing role coverage")
+        lines.append("")
+        if drs.missing_role_coverage:
+            lines.extend(f"- {x}" for x in drs.missing_role_coverage[:25])
+        else:
+            lines.append("_None._")
+        lines.append("")
+        if drs.early_warnings:
+            lines.append("### Early warnings")
+            lines.append("")
+            lines.extend(f"- {x}" for x in drs.early_warnings[:15])
+            lines.append("")
+
+    cd = list(getattr(drs, "heuristic_llm_contradictions", None) or [])
+    if cd:
+        any_dismissed = any(getattr(c, "resolution", "") == "evidence_dismissed" for c in cd)
+        res_note = (
+            "_When `DOMAIN_EVIDENCE_VALIDATION_ENABLED=true`, contradictions can resolve to "
+            "**evidence_dismissed** if structured LLM context shows no invariant violations._"
+            if any_dismissed
+            else "_Final decision: **heuristic precedence** (hard domain rules win) unless the evidence layer dismisses the signal._"
+        )
+        lines += [
+            "### Heuristic vs LLM contradictions",
+            "",
+            res_note,
+            "",
+        ]
+        for i, c in enumerate(cd[:12], 1):
+            lines.append(f"**{i}. Hard heuristic ({c.heuristic_signal_type})**")
+            lines.append(f"- {c.heuristic_description[:300]}{'…' if len(c.heuristic_description) > 300 else ''}")
+            lines.append(f"- **LLM claimed:** {c.llm_claim[:280]}{'…' if len(c.llm_claim) > 280 else ''}")
+            lines.append(f"- **Resolution:** `{c.resolution}`")
+            lines.append("")
+
+    if drs.domain_context_loaded:
+        lines.append("_Domain context (`domain_context.md`) was loaded._")
+    else:
+        lines.append("_`domain_context.md` not found — only soft generic heuristics._")
+    return "\n".join(lines).rstrip()
+
+
+def _repo_behavior_markdown(m: PRMetrics) -> Optional[str]:
+    """Experimental: show precomputed repo scan (artifacts/repo_signals.json) if attached to metrics."""
+    snap = getattr(m, "repo_behavior_snapshot", None)
+    if not snap or not getattr(snap, "clusters", None):
+        return None
+    lines = [
+        "## Repo behavior signals (experimental)",
+        "",
+        "_Precomputed scan of the **local** repository (whole tree, not only this PR diff). "
+        "Generate with:_ `python -m src.cli scan_repo_signals --path <repo>` "
+        "_→ `artifacts/repo_signals.json`. Shown here for transparency and debugging._",
+        "",
+        "| Field | Value |",
+        "|-------|-------|",
+        f"| Source JSON | `{snap.source_json or '—'}` |",
+        f"| Files scanned | {snap.files_scanned} |",
+        f"| Lines scanned | {snap.lines_scanned} |",
+        f"| Signal groups (clustered) | {len(snap.clusters)} _(from {snap.raw_signals_count} deduped rows)_ |",
+        "",
+        "### Top inferred patterns",
+        "",
+        "| Kind | Intent | Occurrences | Files | Conf. | Sample paths |",
+        "|------|--------|-------------|-------|-------|--------------|",
+    ]
+    for c in snap.clusters[:20]:
+        samp = ", ".join(f"`{p.split('/')[-1]}`" for p in c.sample_files[:4])
+        if len(c.sample_files) > 4:
+            samp += "…"
+        lines.append(
+            f"| {c.pattern_kind} | {c.semantic_intent} | {c.occurrences} | {c.file_count} | "
+            f"{c.confidence:.2f} | {samp or '—'} |"
+        )
+    lines += [
+        "",
+        "_Confidence is structural (line/regex heuristics), not proof of business intent._",
+    ]
+    return "\n".join(lines)
+
+
 def _score_badge(score: float) -> str:
     """Return a short text badge for a testing quality score."""
     if score >= 8.0:
@@ -413,6 +560,88 @@ def _scope_status(scope_text: Optional[str]) -> str:
         return "aligned"
 
     return "unknown"
+
+
+def _pr_review_focus_markdown(m: PRMetrics) -> list[str]:
+    """Single above-the-fold block: ticket vs code + production/domain risk (consolidated view)."""
+    scope_raw = _extract_scope_alignment(m.ai_report)
+    scope_st = _scope_status(scope_raw) if scope_raw else "unknown"
+    scope_cell = {
+        "aligned": "✅ Aligned with ticket intent (see **Scope vs ticket** in AI Testing Quality Analysis).",
+        "partial": "🔶 Mostly aligned; may include related extras (refactors, small fixes).",
+        "issues": "⚠️ **Review** — possible contradiction with ticket; read Scope vs ticket.",
+        "no_ticket": "— No ticket text / cannot assess scope.",
+        "unknown": "— Run with AI report to assess scope (or Scope section missing).",
+    }.get(scope_st, "—")
+
+    risk = m.risk_level or "—"
+    risk_emoji = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢"}.get(str(risk).upper(), "")
+    factors = m.risk_factors or []
+    risk_extra = ""
+    if factors:
+        top = factors[0].replace("\n", " ").strip()
+        if len(top) > 200:
+            top = top[:197].rsplit(" ", 1)[0] + "…"
+        risk_extra = f" _{top}_"
+
+    domain_cell = "—"
+    drs = getattr(m, "domain_risk_signals", None)
+    if drs and getattr(drs, "signals", None):
+        try:
+            from src.signal_validator import validated_hard_signals
+
+            hard = validated_hard_signals(drs.signals)
+        except Exception:
+            hard = [
+                s
+                for s in drs.signals
+                if getattr(s, "is_hard", False)
+                and getattr(s, "validation_status", "unvalidated") != "dismissed"
+            ]
+        if hard:
+            types = ", ".join(sorted({str(s.type) for s in hard[:6]}))
+            domain_cell = f"**{len(hard)}** hard signal(s) after validation (`{types}`) — see **Domain Risk Analysis**."
+        elif drs.domain_context_loaded:
+            domain_cell = "No hard signals after diff + evidence checks; still read Domain Risk for soft items."
+        else:
+            domain_cell = "No `domain_context.md` — only generic diff heuristics."
+    elif drs and getattr(drs, "domain_context_loaded", False):
+        domain_cell = "Domain context loaded — see Domain Risk Analysis."
+
+    jira_inv = getattr(m, "jira_invariants", None) or []
+    ticket_inv_cell = (
+        f"**{len(jira_inv)}** phrase(s) from Jira description — cross-check implementation."
+        if jira_inv
+        else "—"
+    )
+
+    biz = getattr(m, "business_rule_risks", None) or []
+    biz_cell = (
+        f"**{len(biz)}** item(s) — see **Business Rule Risks**."
+        if biz
+        else "None extracted from AI audit."
+    )
+
+    return [
+        "---",
+        "",
+        "## PR review focus",
+        "",
+        "_Use this first: **does the code match the ticket?** and **what could break in production?**_",
+        "",
+        "| Check | Result |",
+        "|-------|--------|",
+        f"| **Scope vs Jira ticket** | {scope_cell} |",
+        f"| **Ticket text → constraints** | {ticket_inv_cell} |",
+        f"| **Heuristic risk level** | {risk_emoji} **{risk}**{risk_extra} |",
+        f"| **Domain rules** (`domain_context.md`) | {domain_cell} |",
+        f"| **Business-rule hints (AI)** | {biz_cell} |",
+        "",
+        "**Details:** [Workflow context analysis](#workflow-context-analysis) · "
+        "[AI Testing Quality Analysis](#ai-testing-quality-analysis) (Scope vs ticket + risks) · "
+        "[Domain Risk Analysis](#domain-risk-analysis) · [Executive summary](#executive-summary).",
+        "",
+    ]
 
 
 def workflow_doc_markdown(
@@ -845,6 +1074,7 @@ class ReportGenerator:
             f"**Repository:** {m.repo}",
             "",
         ]
+        lines.extend(_pr_review_focus_markdown(m))
         if getattr(m, "ship_verdict", None):
             lines.extend(_executive_and_shipping_markdown(m))
         else:
@@ -1033,6 +1263,14 @@ class ReportGenerator:
                 m.ai_report,
             ]
 
+        drm = _domain_risk_analysis_markdown(m)
+        if drm:
+            lines += ["", "---", "", drm, ""]
+
+        rbm = _repo_behavior_markdown(m)
+        if rbm:
+            lines += ["", "---", "", rbm, ""]
+
         wca = getattr(m, "workflow_context_analysis", None) or getattr(
             m, "domain_risk_analysis", None
         )
@@ -1141,6 +1379,11 @@ class ReportGenerator:
                 "factors": list(m.risk_factors or []),
                 "context_note": getattr(m, "risk_context_note", None),
             },
+            "domain_risk_signals": (
+                getattr(m, "domain_risk_signals", None).model_dump()
+                if getattr(m, "domain_risk_signals", None) is not None
+                else None
+            ),
             "shipping": {
                 "verdict": getattr(m, "ship_verdict", None),
                 "executive_summary": list(getattr(m, "ship_executive_summary", None) or []),
@@ -1184,6 +1427,11 @@ class ReportGenerator:
             "domain_risk_analysis": getattr(
                 m, "workflow_context_analysis", None
             ),  # legacy JSON key
+            "repo_behavior_snapshot": (
+                m.repo_behavior_snapshot.model_dump()
+                if getattr(m, "repo_behavior_snapshot", None) is not None
+                else None
+            ),
         }
 
     # ------------------------------------------------------------------

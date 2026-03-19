@@ -74,15 +74,42 @@ def compute_ship_verdict(m: PRMetrics) -> tuple[ShipVerdict, list[str]]:
     flags_prod = list(getattr(m, "feature_flags_in_pr", []) or [])
     flags_untested = list(getattr(m, "feature_flags_untested", []) or [])
     legacy = list(getattr(m, "legacy_touched_files", []) or [])
+    drs = getattr(m, "domain_risk_signals", None)
+    hard_n = 0
+    hard_inv = 0
+    if drs and getattr(drs, "signals", None):
+        hard_n = sum(1 for s in drs.signals if getattr(s, "is_hard", False))
+        hard_inv = sum(
+            1
+            for s in drs.signals
+            if getattr(s, "is_hard", False) and getattr(s, "type", "") == "invariant_violation"
+        )
+    domain_hot = bool(
+        drs
+        and drs.domain_context_loaded
+        and (
+            hard_inv >= 1
+            or hard_n >= 2
+            or (getattr(drs, "heuristic_llm_contradictions", None) or [])
+        )
+    )
     risk = (m.risk_level or "LOW").upper()
     score = float(m.testing_quality_score or 0)
     spec_v = len(m.spec_violations or [])
-    cov = m.effective_coverage
+    try:
+        cov = float(m.effective_coverage or 0.0)
+    except (TypeError, ValueError):
+        cov = 0.0
 
     # Build bullets
     bullets.append(
         f"**Testing score:** {score:.2f}/10 · **Risk:** {risk} · **Estimated change coverage:** {cov * 100:.0f}%"
     )
+
+    if domain_hot:
+        bullets.append(
+            "**Domain context:** invariant or failure-pattern signals from `domain_context.md` — review **Domain Risk Analysis** before merge."
+        )
 
     if flags_prod:
         if flags_untested:
@@ -108,6 +135,10 @@ def compute_ship_verdict(m: PRMetrics) -> tuple[ShipVerdict, list[str]]:
 
     verdict: ShipVerdict = "SHIP"
     reasons: list[str] = []
+
+    if domain_hot and verdict == "SHIP":
+        verdict = "SHIP_WITH_CONDITIONS"
+        reasons.append("Domain Risk Analysis flagged invariant/pattern alignment issues.")
 
     if risk == "HIGH":
         verdict = "REVIEW"

@@ -109,6 +109,9 @@ class CachedGitHubService:
     # Passthrough methods (same interface as GitHubService)
     # ------------------------------------------------------------------
 
+    def get_repository(self, repo_name: str) -> Repository:
+        return self._svc.get_repository(repo_name)
+
     def get_pull_request(self, repo_name: str, pr_number: int) -> PullRequest:
         """Return PR object — not cached (PyGithub objects are not serialisable)."""
         return self._svc.get_pull_request(repo_name, pr_number)

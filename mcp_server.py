@@ -78,8 +78,11 @@ def analyze_pr(
     repo_path: Optional[str] = None,
     include_description_report: bool = True,
 ) -> str:
-    """Fetch a GitHub PR, run the full analysis pipeline (test quality, LLM coverage
-    estimate, Jira link), persist metrics, and return a JSON summary.
+    """Fetch a GitHub PR, run the analysis pipeline (test quality, LLM coverage
+    estimate when AI is on, optional Jira), persist metrics, and return a JSON summary.
+
+    Set PR_ANALYZER_PROFILE=demo in the server environment for a lighter run (≈1 LLM call,
+    no workflow-context pass by default) — see docs/DEMO-MCP-GUIDE.md.
 
     When include_description_report is True (default), the response includes
     \"description_markdown\": a markdown block you can paste into the PR description.

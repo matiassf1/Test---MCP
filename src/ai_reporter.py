@@ -178,6 +178,30 @@ def _build_prompt(m: PRMetrics) -> str:
             "This PR is classified as CONTRACT-ONLY (API/schema definitions, generated routes, stubs). "
             "Testing is out of scope here; state that tests will be added in follow-up PRs when business logic is implemented. Do not recommend adding tests for the contract."
         )
+    drs = getattr(m, "domain_risk_signals", None)
+    if drs and (
+        drs.violated_invariants
+        or drs.triggered_failure_patterns
+        or drs.cross_module_concerns
+        or drs.missing_role_coverage
+        or drs.early_warnings
+    ):
+        lines.append("")
+        lines.append("## Domain risk signals (pre-LLM heuristics vs domain_context.md)")
+        if drs.violated_invariants:
+            lines.append("**Invariant candidates:** " + "; ".join(drs.violated_invariants[:5]))
+        if drs.triggered_failure_patterns:
+            lines.append("**Failure-pattern overlap:** " + "; ".join(drs.triggered_failure_patterns[:5]))
+        if drs.cross_module_concerns:
+            lines.append("**Cross-module:** " + "; ".join(drs.cross_module_concerns[:4]))
+        if drs.missing_role_coverage:
+            lines.append("**Role coverage gaps:** " + "; ".join(drs.missing_role_coverage[:4]))
+        for w in drs.early_warnings[:3]:
+            lines.append(f"_{w}_")
+        lines.append(
+            "In **Risk Analysis**, cross-reference these signals; do not duplicate verbatim — interpret for the diff."
+        )
+
     lines.append("")
 
     # Production file diffs

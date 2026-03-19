@@ -146,7 +146,9 @@ class CrossRepoSiblingFetcher:
             contents = self._repo.get_contents(parent_dir)
             siblings = [
                 c.name for c in contents
-                if c.type == "dir" and c.name != source_module
+                if c.type == "dir"
+                and c.name != source_module
+                and not c.name.startswith(".")
             ]
             return siblings
         except Exception as exc:
@@ -162,9 +164,13 @@ class CrossRepoSiblingFetcher:
                 raw = raw[:_MAX_FILE_CHARS] + "\n[truncated]"
             return raw
         except Exception as exc:
-            status = getattr(getattr(exc, "data", None), "get", lambda k, d=None: None)("status")
-            if "403" in str(exc) or "404" in str(exc) or "429" in str(exc):
-                logger.warning("Skipped %s: %s", path, exc)
+            err = str(exc)
+            # 404 = sibling MFE often has no mirror path — expected, not worth stderr noise
+            if "404" in err or '"status": "404"' in err:
+                logger.debug("Sibling reference missing (404): %s", path)
+                return None
+            if "403" in err or "429" in err:
+                logger.warning("Skipped sibling file %s: %s", path, exc)
                 return None
             logger.debug("Could not fetch %s: %s", path, exc)
             return None

@@ -1,9 +1,14 @@
-# repos.yaml — list of repositories for multi-repo analysis
+# List of GitHub repos as `org/name` (same format for `generate_summary --repos` and `sync_repos.py`).
 #
-# Usage:
-#   python generate_summary.py --repos examples/repos.yaml --since 30d --fetch
+# The lines under `repos:` must be real repos you can access, or clones/sync will fail with
+# "Repository not found".
+#
+# Suggested workflow: copy this file to `repos.local.yaml` (gitignored), then edit:
+#   cp examples/repos.yaml repos.local.yaml
+#   python scripts/sync_repos.py --repos-file repos.local.yaml --root ~/src
+#
+# Example entries (uncomment and fix org/repo):
+#   - FloQastInc/close
+#   - FloQastInc/other-service
 
-repos:
-  - acme-org/payments-service
-  - acme-org/auth-service
-  - acme-org/api-gateway
+repos: []

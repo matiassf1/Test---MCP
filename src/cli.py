@@ -699,6 +699,36 @@ def _discover_epic_prs(
     return list(pr_set.keys()), epic_issue
 
 
+def cmd_scan_repo_signals(args: argparse.Namespace) -> int:
+    """Scan a local checkout for structural repo signals (MVP) and write repo_signals.json."""
+    from pathlib import Path
+
+    from src.repo_analyzer.analyzer import RepoAnalyzer, write_repo_signals_json
+
+    path = Path(getattr(args, "path", "") or "").expanduser().resolve()
+    if not path.is_dir():
+        console.print("[red]--path must be an existing directory (repo root).[/red]")
+        return 1
+    out_raw = (getattr(args, "output", "") or "").strip()
+    out = Path(out_raw).expanduser() if out_raw else path / "artifacts" / "repo_signals.json"
+    min_conf = float(getattr(args, "min_confidence", 0) or 0)
+
+    console.rule("[bold blue]Repo behavior signals[/bold blue]")
+    console.print(f"Scanning [bold]{path}[/bold]…")
+    an = RepoAnalyzer()
+    doc = an.analyze_repo(path, min_confidence=min_conf)
+    write_repo_signals_json(doc, out)
+    console.print(
+        f"[green]✓[/green] Wrote [bold]{out}[/bold] "
+        f"({len(doc.signals)} deduped signals, {doc.files_scanned} files, {doc.lines_scanned} lines)"
+    )
+    console.print(
+        "\n[dim]Run PR analysis with [bold]--repo-path[/bold] pointing at this repo to attach "
+        "a summary to the report (reads this JSON if present).[/dim]"
+    )
+    return 0
+
+
 def cmd_build_domain_context(args: argparse.Namespace) -> int:
     """Run the 5-phase Domain Knowledge Pipeline and write domain_context.md."""
     from pathlib import Path
@@ -711,6 +741,8 @@ def cmd_build_domain_context(args: argparse.Namespace) -> int:
     force_refresh: bool = getattr(args, "force_refresh", False)
 
     confluence_queries = [q.strip() for q in confluence_queries_raw.split(",") if q.strip()]
+    repo_local_path: str = (getattr(args, "repo_local_path", "") or "").strip()
+    repo_signals_json: str = (getattr(args, "repo_signals_json", "") or "").strip()
 
     console.rule("[bold blue]Domain Knowledge Pipeline[/bold blue]")
     console.print(f"Repo: [bold]{repo}[/bold]")
@@ -718,6 +750,10 @@ def cmd_build_domain_context(args: argparse.Namespace) -> int:
         console.print(f"Jira project: [bold]{jira_project}[/bold]")
     if confluence_queries:
         console.print(f"Confluence queries: {', '.join(confluence_queries)}")
+    if repo_signals_json:
+        console.print(f"Repo signals JSON: [bold]{repo_signals_json}[/bold] _(§10 appendix)_")
+    elif repo_local_path:
+        console.print(f"Local scan path: [bold]{repo_local_path}[/bold] _(§10 appendix — can be slow)_")
     if force_refresh:
         console.print("[yellow]Force refresh: re-running all phases[/yellow]")
 
@@ -730,6 +766,8 @@ def cmd_build_domain_context(args: argparse.Namespace) -> int:
                 jira_project=jira_project,
                 confluence_queries=confluence_queries or None,
                 force_refresh=force_refresh,
+                repo_local_path=repo_local_path or None,
+                repo_signals_json=repo_signals_json or None,
             )
     except RuntimeError as exc:
         console.print(f"[red]Pipeline error:[/red] {exc}")
@@ -1165,6 +1203,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_storage_arg(p_wf)
 
+    # scan_repo_signals — structural scan → artifacts/repo_signals.json
+    p_rs = sub.add_parser(
+        "scan_repo_signals",
+        help="Scan local repo for guards/flags/tests (MVP) → repo_signals.json for PR report",
+    )
+    p_rs.add_argument("--path", required=True, help="Local repository root directory")
+    p_rs.add_argument(
+        "--output",
+        default="",
+        help="Output JSON path (default: <repo>/artifacts/repo_signals.json)",
+    )
+    p_rs.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.0,
+        help="Drop signals below this confidence 0–1 (default: 0)",
+    )
+
     # build_domain_context
     p_dk = sub.add_parser(
         "build_domain_context",
@@ -1189,6 +1245,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         dest="force_refresh",
         help="Re-run all phases even if cached intermediate files exist",
+    )
+    p_dk.add_argument(
+        "--repo-path",
+        default="",
+        dest="repo_local_path",
+        help="Local clone to scan for structural signals; appends §10 to domain_context.md (optional)",
+    )
+    p_dk.add_argument(
+        "--repo-signals-json",
+        default="",
+        dest="repo_signals_json",
+        help="Precomputed repo_signals.json (from scan_repo_signals); appends §10 without re-scanning",
     )
 
     # generate_summary
@@ -1232,6 +1300,8 @@ def main() -> int:
         return cmd_regenerate_epic_report(args)
     elif args.command == "generate_workflow_docs":
         return cmd_generate_workflow_docs(args)
+    elif args.command == "scan_repo_signals":
+        return cmd_scan_repo_signals(args)
     elif args.command == "build_domain_context":
         return cmd_build_domain_context(args)
     elif args.command == "generate_summary":

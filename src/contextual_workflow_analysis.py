@@ -1,6 +1,6 @@
-"""Workflow-aware PR analysis: grounded in Jira (ticket + epic), Confluence, and repo docs.
+"""Workflow-aware PR analysis: Jira, Confluence, repo docs + domain_context.md.
 
-No hardcoded product rules (signoff/SIL/etc.) — the model infers risks only from supplied context + diff.
+LLM must map findings to Domain Invariants (§2) and Known Failure Patterns (§6) when context exists.
 """
 
 from __future__ import annotations
@@ -13,31 +13,50 @@ from src.models import JiraIssue, PRMetrics
 _MAX_PATCH = 2600
 _MAX_FILES = 6
 
-_SYSTEM = """You are a staff-level reviewer. Your job is to compare a pull request against the **workflow and product context** supplied by the organization (Jira ticket, Epic, internal wiki, repository documentation).
+_SYSTEM_BASE = """You are a staff-level reviewer. Compare the PR to **workflow context** (Jira, Epic, wiki, repo docs) and, when provided, **Organizational Domain Context** (domain_context.md).
 
 ## Rules
-1. **Infer only from provided context.** Do not assume domain rules (authorization, signoff, locks, flags, roles) unless they appear explicitly in the Epic, ticket, Confluence excerpts, or repo docs.
-2. **Ground every finding** in either: (a) a quote or paraphrase of the supplied context, or (b) a concrete line of behavior visible in the PR diff.
-3. **Avoid noise:** do not list "correct denials" or intended restrictions as risks. Do not give generic coding advice.
-4. If context is thin or contradictory, say so once and keep findings minimal.
+1. Ground findings in supplied context + diff. No invented product rules.
+2. **DOMAIN_STRUCT vs diff (critical):** The machine-readable block must reflect whether this PR’s **code change** can realistically break §2 invariants or trigger §6 patterns. If overlap is only keywords/paths (e.g. UI-only) and **authorization / guards / ordering** in the diff are unchanged, use `- NONE` under `VIOLATED_INVARIANTS`. The pipeline runs keyword heuristics first; an **evidence layer** then reconciles your `NONE` with those candidates — you are not “overriding” safety, you are supplying the semantic judgement the diff needs. In narrative sections, still note residual uncertainty when appropriate.
+3. Every material finding must cite **which invariant or pattern** it relates to (or state "no mapping" if none apply).
+4. Avoid noise: intended denials are not bugs.
 
-## Output (markdown)
+## Required output structure (markdown)
 
 ## Workflow context analysis
 
-### Findings
-For each: **Severity** (blocker/high/medium/low), **Category** (scope|workflow|authz|parity|docs|other), **Evidence** (context + diff), **Location** (path), **Suggested check**.
+### Findings mapped to Domain Invariants (Section 2)
+- For each finding: invariant paraphrase → diff evidence → file path. Use `_None — no Section 2 violation identified._` if clean.
+
+### Findings mapped to Known Failure Patterns (Section 6)
+- For each: pattern name/quote → overlap with diff → path. Use `_None — no Section 6 pattern triggered._` if clean.
+
+### Other findings
+- Scope, workflow, authz not covered above (omit if none).
 
 ### Verification gaps
-At most 2 bullets: behaviors the **Epic/ticket/wiki** imply but the **diff/tests** do not clearly cover. Omit if none.
+At most 2 bullets. Omit if none.
 
 ### Impact
-**LOW** | **MEDIUM** | **HIGH** — one line, tied to business/compliance only if context mentions it.
+**LOW** | **MEDIUM** | **HIGH** — one line.
 
-If nothing substantive:
-## Workflow context analysis
-✅ No material gaps detected from the available context and diff.
-_Note: broader risks may exist outside supplied documentation._"""
+If Domain Context is **absent**, omit the two mapping subsections and use a single **Findings** list instead.
+
+---
+
+**Mandatory machine-readable appendix** (exact format, end of message):
+
+---DOMAIN_STRUCT---
+VIOLATED_INVARIANTS:
+- (bullet per Section 2 violation, or single line `- NONE`)
+TRIGGERED_FAILURE_PATTERNS:
+- (per Section 6, or `- NONE`)
+CROSS_MODULE:
+- (cross-MFE/import parity concerns, or `- NONE`)
+MISSING_ROLES:
+- (actors from Role Model §3 not evident in tests/diff, or `- NONE`)
+---END_DOMAIN_STRUCT---
+"""
 
 
 def _context_richness(
@@ -73,7 +92,7 @@ def try_contextual_workflow_analysis(
         confluence_context, epic_markdown, repo_docs_markdown, pr_description, jira_issue
     )
     if metrics.jira_ticket:
-        rich += 450  # linked ticket: always ground analysis (title + diff at minimum)
+        rich += 450
     if rich < 400:
         return (
             "Workflow context analysis skipped: insufficient context "
@@ -125,25 +144,18 @@ def try_contextual_workflow_analysis(
 
     user = "\n\n".join(blocks)
 
-    # Inject pre-built domain context into the system prompt when available.
-    # The framing matters: the LLM must understand this is authoritative input
-    # for inference, not background reading.
-    system = _SYSTEM
+    system = _SYSTEM_BASE
     if domain_context.strip():
-        domain_block = (
-            "\n\n---\n\n"
-            "## Organizational Domain Context\n\n"
-            "The following DOMAIN CONTEXT was extracted from this organization's codebase, "
-            "documentation, and incident history. Use it to:\n"
-            "- Detect violations of domain invariants\n"
-            "- Identify incorrect cross-module assumptions\n"
-            "- Flag missing role coverage\n"
-            "- Recognize known failure patterns before they reach production\n\n"
-            "Treat every rule in section 2 (DOMAIN INVARIANTS) as a hard constraint. "
-            "Treat every entry in section 6 (KNOWN FAILURE PATTERNS) as a red flag to actively look for.\n\n"
-            + domain_context.strip()
+        system += (
+            "\n\n---\n## Organizational Domain Context (authoritative)\n\n"
+            "Map findings explicitly to **Section 2** and **Section 6** as required above.\n\n"
+            + domain_context.strip()[:24000]
         )
-        system = _SYSTEM + domain_block
+    else:
+        system += (
+            "\n\n_No domain_context.md in this run — use simplified Findings only; "
+            "still emit the DOMAIN_STRUCT block with `- NONE` for all four lists._"
+        )
 
     try:
         return _call_llm(

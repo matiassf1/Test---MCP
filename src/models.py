@@ -3,9 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
+
+from src.repo_analyzer.models import RepoBehaviorSnapshot
 
 
 class TestType(str, Enum):
@@ -81,6 +83,68 @@ class AuthorStats(BaseModel):
     avg_testing_quality_score: float = 0.0
     tests_added: int = 0
     lines_modified: int = 0
+
+
+DomainSignalType = Literal[
+    "invariant_violation",
+    "failure_pattern",
+    "cross_module_concern",
+    "missing_role",
+    "early_warning",
+]
+
+SignalValidationStatus = Literal[
+    "unvalidated",
+    "candidate",
+    "confirmed",
+    "dismissed",
+    "uncertain",
+]
+SignalValidationSource = Literal["none", "behavior_verifier", "evidence_layer"]
+
+
+class DomainSignal(BaseModel):
+    """Structured domain finding; heuristics from domain_context may set is_hard=True.
+
+    After the evidence resolution layer, ``validation_status`` reflects whether the
+    signal was treated as a hypothesis (candidate) and then confirmed, dismissed, etc.
+    """
+
+    type: DomainSignalType
+    description: str
+    evidence: list[str] = Field(default_factory=list)
+    confidence: float = Field(1.0, ge=0.0, le=1.0)
+    source: Literal["heuristic", "llm"] = "heuristic"
+    is_hard: bool = False
+    validation_status: SignalValidationStatus = "unvalidated"
+    validation_reason: str = ""
+    validation_source: SignalValidationSource = "none"
+
+
+class HeuristicLLMContradiction(BaseModel):
+    """LLM output disagreed with a heuristic; resolution may be updated by the evidence layer."""
+
+    heuristic_description: str
+    heuristic_signal_type: str = "invariant_violation"
+    llm_claim: str
+    resolution: Literal[
+        "heuristic_precedence",
+        "evidence_dismissed",
+        "evidence_uncertain",
+    ] = "heuristic_precedence"
+
+
+class DomainRiskSignals(BaseModel):
+    """Pre-LLM + LLM-merged domain risk (signals are canonical; legacy lists mirror them)."""
+
+    signals: list[DomainSignal] = Field(default_factory=list)
+    heuristic_llm_contradictions: list[HeuristicLLMContradiction] = Field(default_factory=list)
+    violated_invariants: list[str] = Field(default_factory=list)
+    triggered_failure_patterns: list[str] = Field(default_factory=list)
+    cross_module_concerns: list[str] = Field(default_factory=list)
+    missing_role_coverage: list[str] = Field(default_factory=list)
+    early_warnings: list[str] = Field(default_factory=list)
+    domain_context_loaded: bool = False
 
 
 class AIAnalysis(BaseModel):
@@ -174,6 +238,11 @@ class PRMetrics(BaseModel):
 
     # Jira epic + ticket + Confluence + repo docs → workflow-grounded LLM analysis
     workflow_context_analysis: Optional[str] = None
+    # domain_context.md heuristics + structured LLM extractions
+    domain_risk_signals: Optional[DomainRiskSignals] = None
+
+    # Precomputed repo scan (artifacts/repo_signals.json or repo_signals_json_path) — experimental report section
+    repo_behavior_snapshot: Optional[RepoBehaviorSnapshot] = None
 
 
 @dataclass

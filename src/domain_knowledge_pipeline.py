@@ -6,6 +6,7 @@ Phases (1–3 run in parallel, 4–5 run sequentially):
   3. Jira Mining      — extract failure patterns from bug/incident tickets
   4. Normalization    — unify the three sources into a coherent domain model
   5. Context Generation — produce domain_context.md for injection into the PR analyzer
+  6. (optional) Local repo analyzer — append §10 INFERRED FROM CODE from ``scan_repo_signals`` / local scan
 
 Usage:
   from src.domain_knowledge_pipeline import DomainKnowledgePipeline, load_domain_context
@@ -15,6 +16,8 @@ Usage:
       repo="org/repo",
       jira_project="PROJ",
       confluence_queries=["signoff", "checklist", "authorization"],
+      repo_local_path="/path/to/clone",  # optional — appends §10 from RepoAnalyzer
+      # repo_signals_json="/path/to/repo_signals.json",  # optional — use precomputed scan
   )
 
   # In PR analyzer:
@@ -34,6 +37,9 @@ from src.config import settings
 from src.github_service import GitHubService
 
 logger = logging.getLogger(__name__)
+
+# Project root (parent of ``src/``) — used so ``domain_context.md`` is found regardless of shell cwd
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 _OUTPUT_DIR = Path("domain_knowledge")
 _FINAL_OUTPUT = Path("domain_context.md")
@@ -254,6 +260,11 @@ These rules MUST NOT be violated.
 
 These modules DO NOT behave the same.
 
+For Close **ui/** MFEs, always document if applicable:
+- **checklist-client:** no workflow-based guards (`!isWorkflow`); strict signoff ordering always.
+- **recs-client:** may use workflow conditions; relaxed ordering in some cases.
+- 🚨 Never import or replicate recs-client signoff/workflow logic into checklist-client.
+
 - <Module A> vs <Module B>:
   - <Module A>: <what is true here>
   - <Module B>: <what differs here>
@@ -360,6 +371,8 @@ class DomainKnowledgePipeline:
         jira_project: str = "",
         confluence_queries: Optional[list[str]] = None,
         force_refresh: bool = False,
+        repo_local_path: Optional[str] = None,
+        repo_signals_json: Optional[str] = None,
     ) -> Path:
         """Run the full pipeline and return the path to ``domain_context.md``.
 
@@ -370,6 +383,11 @@ class DomainKnowledgePipeline:
             confluence_queries: List of domain keywords for Confluence search
                 (e.g. ``["signoff", "checklist", "authorization"]``).
             force_refresh: When True, re-run all phases even if cached files exist.
+            repo_local_path: Optional local clone root; if set, runs
+                :class:`~src.repo_analyzer.analyzer.RepoAnalyzer` and appends **§10**
+                to the output (and writes ``domain_knowledge/repo_signals.json``).
+            repo_signals_json: Optional path to precomputed ``repo_signals.json``
+                (from ``scan_repo_signals``); skips full scan if readable.
 
         Returns:
             Path to the generated ``domain_context.md``.
@@ -411,10 +429,74 @@ class DomainKnowledgePipeline:
 
         # ---- Phase 5: Generate final context --------------------------------
         domain_context = self._generate_context(normalized)
+
+        # ---- Phase 6 (optional): repo analyzer appendix --------------------
+        signals_doc = self._load_repo_signals_document(repo_signals_json, repo_local_path)
+        if signals_doc is not None and signals_doc.signals:
+            from src.repo_analyzer.context_appendix import format_domain_context_appendix
+
+            appendix = format_domain_context_appendix(signals_doc)
+            domain_context = domain_context.rstrip() + "\n\n" + appendix
+            logger.info(
+                "Appended §10 repo analyzer appendix (%s signals, %s files scanned)",
+                len(signals_doc.signals),
+                signals_doc.files_scanned,
+            )
+
         self._final_output.write_text(domain_context, encoding="utf-8")
         logger.info("Domain context written to %s", self._final_output)
 
         return self._final_output
+
+    # ------------------------------------------------------------------
+    # Phase 6 — Repo signals (local scan or JSON)
+    # ------------------------------------------------------------------
+
+    def _load_repo_signals_document(
+        self,
+        repo_signals_json: Optional[str],
+        repo_local_path: Optional[str],
+    ):
+        """Load or produce RepoSignalsFile for §10 appendix. Returns None if disabled/empty."""
+        from pathlib import Path as _Path
+
+        from src.repo_analyzer.analyzer import RepoAnalyzer, load_repo_signals_file, write_repo_signals_json
+
+        path_json = (repo_signals_json or "").strip()
+        if path_json:
+            p = _Path(path_json).expanduser()
+            doc = load_repo_signals_file(p)
+            if doc is not None:
+                return doc
+            logger.warning("repo_signals_json not found or invalid: %s", p)
+            return None
+
+        path_repo = (repo_local_path or "").strip()
+        if not path_repo:
+            pj = (getattr(settings, "domain_build_repo_signals_json", "") or "").strip()
+            if pj:
+                doc = load_repo_signals_file(_Path(pj).expanduser())
+                if doc is not None:
+                    return doc
+            path_repo = (getattr(settings, "domain_build_repo_path", "") or "").strip()
+
+        if not path_repo:
+            return None
+
+        root = _Path(path_repo).expanduser().resolve()
+        if not root.is_dir():
+            logger.warning("repo_local_path is not a directory: %s", root)
+            return None
+
+        logger.info("Phase 6: scanning local repo for structural signals: %s", root)
+        doc = RepoAnalyzer().analyze_repo(root)
+        try:
+            self._output_dir.mkdir(parents=True, exist_ok=True)
+            write_repo_signals_json(doc, self._output_dir / "repo_signals.json")
+            logger.info("Wrote %s", self._output_dir / "repo_signals.json")
+        except Exception as exc:
+            logger.debug("Could not write repo_signals.json: %s", exc)
+        return doc
 
     # ------------------------------------------------------------------
     # Phase implementations
@@ -570,10 +652,26 @@ class DomainKnowledgePipeline:
 # Loader — used by PR analyzer to inject domain context
 # ---------------------------------------------------------------------------
 
-def load_domain_context(path: Optional[Path] = None) -> str:
-    """Return the contents of domain_context.md, or '' if the file does not exist."""
-    p = path or _FINAL_OUTPUT
-    try:
-        return p.read_text(encoding="utf-8") if p.exists() else ""
-    except Exception:
-        return ""
+def load_domain_context(path: Optional[Path | str] = None) -> str:
+    """Return the contents of domain_context.md, or '' if missing.
+
+    Relative paths are tried in order:
+    1. ``<project_root>/<path>`` (directory containing ``src/``, i.e. this repo)
+    2. ``<current working directory>/<path>``
+
+    So ``analyze_change`` finds ``domain_context.md`` even when run from ``~`` or another folder,
+    as long as the file lives next to ``src/``.
+    """
+    p = Path(path) if path is not None else _FINAL_OUTPUT
+    candidates: list[Path]
+    if p.is_absolute():
+        candidates = [p]
+    else:
+        candidates = [_PROJECT_ROOT / p, Path.cwd() / p]
+    for c in candidates:
+        try:
+            if c.is_file():
+                return c.read_text(encoding="utf-8")
+        except OSError as e:
+            logger.debug("Could not read domain context %s: %s", c, e)
+    return ""

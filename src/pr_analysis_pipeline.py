@@ -238,16 +238,63 @@ class PRAnalysisPipeline:
             populate_shipping_metadata(metrics, prod_diff, test_diff, _segs)
         except Exception:
             pass
-        # Risk is recomputed after final testing_quality_score (step 6 blend) — see below.
+
+        try:
+            from pathlib import Path as _Path
+
+            from src.config import settings as _st_dom
+            from src.domain_context_heuristics import run_domain_heuristics
+            from src.domain_knowledge_pipeline import load_domain_context
+            from src.models import DomainRiskSignals
+
+            metrics.domain_risk_signals = run_domain_heuristics(
+                load_domain_context(_Path(_st_dom.domain_context_path)),
+                prod_diff,
+                file_changes,
+                test_diff,
+            )
+        except Exception as exc:
+            import logging as _log
+
+            _log.getLogger(__name__).exception("Domain heuristics failed: %s", exc)
+            from src.models import DomainRiskSignals
+
+            metrics.domain_risk_signals = DomainRiskSignals(
+                early_warnings=["Domain heuristic layer failed to run."]
+            )
+        # Risk is recomputed after workflow LLM + domain_struct merge — see below.
 
         # ---- 5c. Business rule violation detection (all layers, no AI key needed) ----
         biz_context = self._run_business_rule_detection(
+            repo=repo,
             file_changes=file_changes,
             jira_issue=jira_issue,
         )
         metrics.copy_flags = biz_context.copy_flags
         metrics.jira_invariants = biz_context.jira_invariants
         metrics.test_invariants = biz_context.test_invariants
+
+        try:
+            if metrics.domain_risk_signals and biz_context.copy_flags:
+                from src.domain_context_heuristics import append_porting_signals
+
+                append_porting_signals(metrics.domain_risk_signals, biz_context.copy_flags)
+        except Exception:
+            pass
+
+        # Precomputed repo-wide signals (artifacts/repo_signals.json) for report transparency
+        try:
+            from src.config import settings as _s_rs
+
+            if getattr(_s_rs, "repo_behavior_report_enabled", False) and repo_path:
+                from src.repo_analyzer.analyzer import load_or_build_snapshot
+
+                _pj = (_s_rs.repo_signals_json_path or "").strip()
+                _snap = load_or_build_snapshot(repo_path, explicit_json=_pj or None)
+                if _snap:
+                    metrics.repo_behavior_snapshot = _snap
+        except Exception:
+            pass
 
         self.timings["metrics"] = (time.perf_counter() - t) * 1000
 
@@ -301,6 +348,29 @@ class PRAnalysisPipeline:
                     jira_issue=jira_issue,
                     domain_context=_domain_ctx,
                 )
+                try:
+                    from src.domain_context_heuristics import merge_llm_domain_struct, sync_legacy_domain_lists
+
+                    if metrics.domain_risk_signals is not None:
+                        merge_llm_domain_struct(
+                            metrics.workflow_context_analysis or "",
+                            metrics.domain_risk_signals,
+                        )
+                        try:
+                            from src.config import settings as _ev_set
+                            from src.signal_validator import apply_evidence_resolution
+
+                            if getattr(_ev_set, "domain_evidence_validation_enabled", False):
+                                apply_evidence_resolution(
+                                    metrics.domain_risk_signals,
+                                    metrics.workflow_context_analysis or "",
+                                    prod_diff,
+                                )
+                                sync_legacy_domain_lists(metrics.domain_risk_signals)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
         except Exception:
             metrics.workflow_context_analysis = None
         metrics.llm_estimated_coverage = try_estimate_coverage(metrics)
@@ -343,7 +413,12 @@ class PRAnalysisPipeline:
             metrics.risk_factors,
             metrics.risk_breakdown,
             metrics.risk_context_note,
-        ) = compute_risk(metrics, prod_diff, test_diff)
+        ) = compute_risk(
+            metrics,
+            prod_diff,
+            test_diff,
+            domain_signals=metrics.domain_risk_signals,
+        )
 
         # Extract spec violations, business rule risks, and apply LLM risk upgrade from AI report
         if metrics.ai_report:
@@ -426,6 +501,7 @@ class PRAnalysisPipeline:
 
     def _run_business_rule_detection(
         self,
+        repo: str,
         file_changes: list[FileChange],
         jira_issue: Optional[object],
     ) -> "BusinessRuleContext":
@@ -461,7 +537,16 @@ class PRAnalysisPipeline:
         try:
             from src.config import settings
             if getattr(settings, "enable_cross_repo_siblings", True):
-                sibling_refs = CrossRepoSiblingFetcher(self._gh).fetch(file_changes)
+                gh_repo = self._gh.get_repository(repo)
+                sctx = CrossRepoSiblingFetcher(gh_repo).fetch(file_changes)
+                sibling_refs = [
+                    {
+                        "module": ref.module,
+                        "relative_path": ref.relative_path,
+                        "content": ref.content,
+                    }
+                    for ref in sctx.refs
+                ]
         except Exception:
             pass
 

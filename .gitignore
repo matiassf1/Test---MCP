@@ -16,6 +16,9 @@ build/
 .coverage
 htmlcov/
 
+# Local repo lists (may contain internal org names)
+repos.local.yaml
+
 # Cache / generated
 .cache/
 metrics/
