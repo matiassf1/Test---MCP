@@ -61,6 +61,13 @@
   - **`LOCK_DOCS`:** restrict **modifying documents** only — **not** the same as LOCK_ALL (distinction is **critical** for checklist/table UI).
   - **`DISABLED`:** company turns off single-item lock at the policy control level.
 - **Frontend gating (current AC — Kelly / team):** **Sign-offs** and **slideout** are locked **only when both:** (1) the **single-item lock feature flag** is **enabled**, and (2) the company has **`LOCK_ALL`** selected (**not** `LOCK_DOCS`, **not** `DISABLED`).
+- **One policy for manual + auto lock:** The **Single Item Lock** setting (**`LOCK_DOCS` / `LOCK_ALL` / `DISABLED`**) drives **both** (a) **manual** item lock (e.g. dropdown in UI) **and** (b) **auto lock** on **signature completion**. There is **not** a separate granular company toggle “only auto lock” vs “only manual” — same enum semantics for both paths.
+- **V1 vs V2 on company settings (naming — align code review):**
+  - **V1:** **`isSingleTaskAutoLockEnabled`** (legacy auto-lock flag / “old” gate).
+  - **V2:** **`singleItemLockEnabled`** + **`SingleItemLock`** enum (**`LOCK_ALL`**, **`LOCK_DOCS`**, **`DISABLED`**).
+  - Do **not** treat V2 as merely “V1 renamed”; V2 is the **policy model** for both manual and auto lock behavior once shipped.
+- **Code hygiene:** Internal unlock state naming may use **`SIL_UNLOCKED`** (or successor names) after refactors — keep **grep** and constants aligned with PRs (e.g. CLOSE-12509 area).
+- **Ship blocker / review heuristic:** Avoid an **early return** in the **V2** code path that runs **only when V1 is enabled** (or bails when V1 is disabled). That pattern “worked during dev” but **fails** after ship when: a **new entity** has **V1 off** and **V2 on**, or **V1 is deprecated** but the early return remains — users would **always** hit the short-circuit and never get V2 behavior. **Prefer independent V2 checks** (flag + `singleItemLockEnabled` + enum) per product AC.
 - **Product nuance (policy changes):** If the company sets **`DISABLED`**, the stored enum may **overwrite** the prior value — UX/product want **items already locked** to **retain** effective behavior (**LOCK_ALL** vs **LOCK_DOCS**) rather than retroactively unlocking or guessing wrong. Ideal: **persist lock behavior at time of locking**; if not feasible, fallback is a **single default** for “locked under unknown policy” or keep unlocked — align with PM/engineering.
 - **Planned / WIP data shape (dev sync):** Add **`singleItemLockEnabled: boolean`** alongside **`singleItemLock: string`** (enum). Together they express “company has feature off” **without** losing the last enum for **item-level** checks. Example patterns:
   - Company-wide **strict gating:** `singleItemLockEnabled && singleItemLock === 'LOCK_ALL'` (for FE behaviors tied to company toggle).
@@ -227,6 +234,12 @@
 - **Root cause:** Single field **`singleItemLock`** overwritten with **`DISABLED`** with **no** per-item snapshot / no **`singleItemLockEnabled`** companion; FE checks **flag** without **policy** or **policy** without **flag**.
 - **Impact:** Wrong table row state, documents editable when they should not be (or vice versa), audit narrative inconsistent with actual lock.
 - **Keywords:** `SingleItemLock`, `singleItemLockEnabled`, `LOCK_ALL`, `LOCK_DOCS`, `close_locking_single-item-lock`, **kebab** unlock.
+
+### Pattern: SIL V2 blocked by V1-disabled early return
+- **Description:** **V2** Single Item Lock path returns early when **`isSingleTaskAutoLockEnabled`** (V1) is **false**, assuming V1/V2 were mapped as mutually dependent.
+- **Root cause:** Transitional dev assumption; V1 and V2 are **not** the same toggle — entities may ship with **V1 off** and **V2 on**, or **V1** may be **removed** later.
+- **Impact:** Auto/manual lock under **LOCK_ALL** / **LOCK_DOCS** never runs; silent regression after rollout or deprecation.
+- **Keywords:** `isSingleTaskAutoLockEnabled`, `singleItemLockEnabled`, **V2** path, early return.
 
 ### Pattern: recs-client logic ported into checklist-client
 - Description: **isWorkflow** guards, **recs-client** **import**, relaxed **signoff** **ordering**, **isAuthorizedForSignoff** copied from **recs** into **checklist-client** **authorization.js** **signoffAuthorization.js**.
