@@ -2,6 +2,8 @@
 
 Guía informal para **mostrar el proyecto sin quemar CPU, rate limits ni cerebros**. Pensada para alguien que lo sube a un host y lo consume desde Cursor / otro cliente MCP.
 
+**Índice general:** [`DEMO-GUIA.md`](DEMO-GUIA.md) · **Chuleta 1 página:** [`DEMO-HELPER.md`](DEMO-HELPER.md) · **Guión reunión (EN):** [`../DEMO.md`](../DEMO.md)
+
 ---
 
 ## Qué problema resuelve OpenSpec (deuda con Python / dominio)

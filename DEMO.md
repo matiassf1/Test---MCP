@@ -1,13 +1,17 @@
 # Demo Script — PR Testing Impact Analyzer
 **Grooming · Tuesday 2026-03-18 · ~10 min**
 
+**Other doc (Spanish index + cheat sheet + MCP tips):** [`docs/DEMO-GUIA.md`](docs/DEMO-GUIA.md) · [`docs/DEMO-HELPER.md`](docs/DEMO-HELPER.md)  
+For a **lighter** live run (faster MCP): set `PR_ANALYZER_PROFILE=demo` in `.env` — see [`docs/DEMO-MCP-GUIDE.md`](docs/DEMO-MCP-GUIDE.md).
+
 ---
 
 ## Setup (before the meeting)
 
 - [ ] MCP server running locally: `python mcp_server.py`
 - [ ] Cursor open with the MCP tool configured and connected
-- [ ] `.env` has `GITHUB_TOKEN` + `ANTHROPIC_API_KEY` (for live AI report)
+- [ ] `.env` has `GITHUB_TOKEN` + **an LLM key** (Anthropic, OpenAI, or OpenRouter — match your setup)
+- [ ] Optional for speed: `PR_ANALYZER_PROFILE=demo` (skips full narrative + second LLM pass by default)
 - [ ] This file open on a second screen or phone
 
 ---
