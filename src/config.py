@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Repo root (parent of src/). MCP/CLI may start with cwd != project root; load .env from here first.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_ROOT_ENV = _PROJECT_ROOT / ".env"
+# Prefer .env next to the package so Cursor stdio MCP always finds secrets even if cwd is wrong.
+_ENV_FILE = str(_ROOT_ENV) if _ROOT_ENV.is_file() else ".env"
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, env_file_encoding="utf-8", extra="ignore")
 
     # full = todas las capas | demo = MCP/light — ver docs/DEMO-MCP-GUIDE.md
     analyzer_profile: str = Field(

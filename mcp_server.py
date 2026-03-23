@@ -391,6 +391,15 @@ def _make_sse_wrapped_app():
 if __name__ == "__main__":
     transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
 
+    # stdio: Cursor MCP log view labels stderr as "[error]" — suppress routine INFO (override: MCP_LOG_LEVEL=INFO).
+    if transport != "sse":
+        import logging
+
+        _lvl = os.environ.get("MCP_LOG_LEVEL", "WARNING").upper()
+        _level = getattr(logging, _lvl, logging.WARNING)
+        for _name in ("mcp", "mcp.server", "mcp.server.lowlevel", "httpx", "httpcore"):
+            logging.getLogger(_name).setLevel(_level)
+
     if transport == "sse":
         print(f"Starting SSE MCP server on port {_port}")
         wrapped = _make_sse_wrapped_app()
