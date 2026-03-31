@@ -167,6 +167,51 @@ Show a concise summary:
 
 ---
 
+## Running in Cursor
+
+Cursor does **not** automatically read `.claude/commands/` — you need to paste this prompt manually.
+
+### Setup
+
+1. Open the cloned repo as a secondary workspace:
+   **File → Add Folder to Workspace…** → select the cloned repo root (e.g. `/path/to/close`)
+
+2. In Cursor's chat, reference this file as context:
+   ```
+   @file:/path/to/testing-internal-tool/.claude/commands/mine-repo.md
+   ```
+   Then add the repo path argument:
+   ```
+   /mine-repo /path/to/close
+   ```
+   Or paste the full prompt content directly and specify the path.
+
+### Output paths
+
+Write output files to the **testing-internal-tool** project, not the cloned repo:
+
+- `domain_knowledge/feature_flags.md` → `testing-internal-tool/domain_knowledge/feature_flags.md`
+- `domain_knowledge/repo_rules/<repo-name>.md` → `testing-internal-tool/domain_knowledge/repo_rules/<repo-name>.md`
+
+Ask Cursor to write these files using absolute paths to the testing-internal-tool directory.
+
+### Step 4 — DomainContextEnricher
+
+Skip the Python execution step in Cursor (Step 4 of the command). After Cursor finishes writing the output files, run the enricher manually from the `testing-internal-tool` project:
+
+```bash
+cd /path/to/testing-internal-tool
+.venv/Scripts/python -c "
+from src.domain_context_enricher import DomainContextEnricher
+DomainContextEnricher().enrich()
+print('Domain context enriched.')
+"
+```
+
+On Mac/Linux use `.venv/bin/python` instead of `.venv/Scripts/python`.
+
+---
+
 ## Guardrails
 
 - Only report what you actually found in the code — never fabricate rules
