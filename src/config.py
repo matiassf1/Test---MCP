@@ -53,7 +53,10 @@ class Settings(BaseSettings):
 
     # Confluence integration (optional — feature disabled when absent)
     confluence_base_url: str = ""   # e.g. https://yourcompany.atlassian.net/wiki
-    confluence_token: str = ""      # Atlassian personal access token
+    confluence_token: str = ""      # Atlassian API token (same as JIRA_API_TOKEN for Cloud)
+    # Atlassian Cloud requires Basic auth (email:token). Set to your Atlassian email.
+    # Defaults to jira_username when empty so Cloud users only need one username field.
+    confluence_username: str = ""
 
     # Comma-separated path substrings → "legacy surface" in PR reports (case-insensitive)
     legacy_path_segments: str = (
@@ -74,6 +77,19 @@ class Settings(BaseSettings):
     # DomainKnowledgePipeline.build() defaults when args omitted (optional)
     domain_build_repo_path: str = ""  # local clone to scan for §10 appendix
     domain_build_repo_signals_json: str = ""  # or use precomputed JSON path for §10
+
+    # Domain knowledge mining — populated by refresh_domain / build_repo_index
+    # Comma-separated Confluence space keys to mine (e.g. "Close,ENG,ARCH")
+    confluence_spaces: str = "Close"
+    # GitHub org to query for repo priority index
+    floqast_org: str = "FloQastInc"
+    # Harness API key (optional — enables flag metadata enrichment beyond grep)
+    harness_api_key: str = ""
+    # Cron expression for scheduled domain refresh (informational; used by external scheduler)
+    domain_refresh_schedule: str = "0 9 * * 1"  # Mondays 9am UTC
+    # Paths for mined knowledge artifacts (relative to project root)
+    feature_flags_path: str = "domain_knowledge/feature_flags.md"
+    repo_priority_index_path: str = "domain_knowledge/repo_priority_index.yaml"
 
     # Risk: each hard domain signal (from domain_context §2/§5/§6) adds up to this many points
     domain_hard_signal_points: int = 2

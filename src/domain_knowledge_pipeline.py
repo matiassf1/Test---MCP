@@ -353,9 +353,15 @@ class DomainKnowledgePipeline:
         final_output: Optional[Path] = None,
     ) -> None:
         self._gh = github_service or GitHubService()
+        # Prefer explicit confluence_username; fall back to jira_username (same Atlassian account on Cloud)
+        _conf_user = (
+            getattr(settings, "confluence_username", "") or
+            getattr(settings, "jira_username", "")
+        )
         self._confluence = confluence_service or ConfluenceService(
             base_url=settings.confluence_base_url,
             token=settings.confluence_token,
+            username=_conf_user,
         )
         self._output_dir = output_dir or _OUTPUT_DIR
         self._final_output = final_output or _FINAL_OUTPUT
@@ -370,24 +376,34 @@ class DomainKnowledgePipeline:
         *,
         jira_project: str = "",
         confluence_queries: Optional[list[str]] = None,
+        confluence_spaces: Optional[list[str]] = None,
+        jira_issue_types: Optional[list[str]] = None,
+        max_jira_tickets: int = 100,
+        since_days: int = 180,
         force_refresh: bool = False,
         repo_local_path: Optional[str] = None,
         repo_signals_json: Optional[str] = None,
+        repos_file: Optional[str] = None,
+        enrich: bool = True,
+        extract_feature_flags: bool = False,
     ) -> Path:
         """Run the full pipeline and return the path to ``domain_context.md``.
 
         Args:
-            repo: GitHub repo in ``org/name`` format.
-            jira_project: Jira project key (e.g. ``CLOSE``). Used to fetch
-                bug/incident tickets for Phase 3.
-            confluence_queries: List of domain keywords for Confluence search
-                (e.g. ``["signoff", "checklist", "authorization"]``).
-            force_refresh: When True, re-run all phases even if cached files exist.
-            repo_local_path: Optional local clone root; if set, runs
-                :class:`~src.repo_analyzer.analyzer.RepoAnalyzer` and appends **§10**
-                to the output (and writes ``domain_knowledge/repo_signals.json``).
-            repo_signals_json: Optional path to precomputed ``repo_signals.json``
-                (from ``scan_repo_signals``); skips full scan if readable.
+            repo: GitHub repo in ``org/name`` format (used for phase 1).
+            jira_project: Jira project key (e.g. ``CLOSE``).
+            confluence_queries: Domain keywords for Confluence search.
+            confluence_spaces: Confluence space keys for bulk mining (new phase 2).
+                Defaults to ``settings.confluence_spaces`` split by comma.
+            jira_issue_types: Issue types for Jira mining. Defaults to broad set.
+            max_jira_tickets: Max tickets to fetch (default 100).
+            since_days: Jira ticket recency window in days (default 180).
+            force_refresh: Re-run all phases even if cached files exist.
+            repo_local_path: Optional local clone for §10 repo analyzer appendix.
+            repo_signals_json: Optional precomputed repo_signals.json for §10.
+            repos_file: Path to repo_priority_index.yaml for phase 0 / feature flag extraction.
+            enrich: When True (default), run DomainContextEnricher after generation.
+            extract_feature_flags: When True and repos_file is set, run FeatureFlagExtractor.
 
         Returns:
             Path to the generated ``domain_context.md``.
@@ -402,6 +418,12 @@ class DomainKnowledgePipeline:
 
         self._output_dir.mkdir(exist_ok=True)
 
+        # ---- Phase 0 (optional): load repo priority index ------------------
+        priority_repos: list[str] = []
+        if repos_file:
+            priority_repos = self._load_repos_file(repos_file)
+            logger.info("Phase 0: loaded %d repos from %s", len(priority_repos), repos_file)
+
         # ---- Phases 1–3 in parallel ----------------------------------------
         def _cached(name: str, fn) -> str:  # type: ignore[type-arg]
             path = self._output_dir / name
@@ -413,10 +435,32 @@ class DomainKnowledgePipeline:
             logger.info("Wrote %s", path)
             return result
 
+        # Resolve confluence spaces: prefer explicit arg, then settings, then fall back to queries
+        spaces = confluence_spaces
+        if not spaces:
+            spaces_cfg = (getattr(settings, "confluence_spaces", "") or "").strip()
+            spaces = [s.strip() for s in spaces_cfg.split(",") if s.strip()] if spaces_cfg else []
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             f1 = executor.submit(_cached, "repo_analysis.md", lambda: self._mine_repo(repo))
-            f2 = executor.submit(_cached, "confluence_rules.md", lambda: self._mine_confluence(confluence_queries or []))
-            f3 = executor.submit(_cached, "jira_patterns.md", lambda: self._mine_jira(jira_project))
+            f2 = executor.submit(
+                _cached,
+                "confluence_rules.md",
+                lambda: self._mine_confluence_v2(
+                    spaces=spaces,
+                    query_terms=confluence_queries or ["signoff", "authorization", "locking", "checklist"],
+                ),
+            )
+            f3 = executor.submit(
+                _cached,
+                "jira_patterns.md",
+                lambda: self._mine_jira_v2(
+                    jira_project=jira_project,
+                    issue_types=jira_issue_types,
+                    max_tickets=max_jira_tickets,
+                    since_days=since_days,
+                ),
+            )
             repo_md = f1.result()
             confluence_md = f2.result()
             jira_md = f3.result()
@@ -446,7 +490,104 @@ class DomainKnowledgePipeline:
         self._final_output.write_text(domain_context, encoding="utf-8")
         logger.info("Domain context written to %s", self._final_output)
 
+        # ---- Phase 5c (optional): feature flag extraction ------------------
+        if extract_feature_flags and priority_repos:
+            try:
+                from src.feature_flag_extractor import FeatureFlagExtractor
+                logger.info("Phase 5c: extracting feature flags from %d repos", len(priority_repos))
+                extractor = FeatureFlagExtractor()
+                result = extractor.extract(priority_repos[:10])  # cap at 10 for speed
+                extractor.write_output(result)
+                logger.info("Phase 5c: feature flags written")
+            except Exception as exc:
+                logger.warning("Phase 5c: feature flag extraction failed: %s", exc)
+
+        # ---- Phase 5b (optional): domain context enrichment ----------------
+        if enrich:
+            try:
+                from src.domain_context_enricher import DomainContextEnricher
+                logger.info("Phase 5b: enriching domain_context.md")
+                DomainContextEnricher().enrich()
+                logger.info("Phase 5b: enrichment complete")
+            except Exception as exc:
+                logger.warning("Phase 5b: enrichment failed: %s", exc)
+
         return self._final_output
+
+    def _load_repos_file(self, repos_file: str) -> list[str]:
+        """Load repo names from a repo_priority_index.yaml file."""
+        import yaml as _yaml
+        p = Path(repos_file)
+        if not p.exists():
+            logger.warning("repos_file not found: %s", p)
+            return []
+        try:
+            with open(p, encoding="utf-8") as f:
+                entries = _yaml.safe_load(f) or []
+            return [e["repo"] for e in entries if isinstance(e, dict) and "repo" in e]
+        except Exception as exc:
+            logger.warning("Failed to load repos_file %s: %s", p, exc)
+            return []
+
+    def _mine_confluence_v2(self, spaces: list[str], query_terms: list[str]) -> str:
+        """Phase 2 (v2) — bulk space-scoped Confluence mining."""
+        logger.info("Phase 2 (v2): mining Confluence spaces=%s queries=%s", spaces, query_terms)
+
+        if not self._confluence.is_available():
+            return "# Confluence Rules\n(Confluence not configured — set CONFLUENCE_BASE_URL and CONFLUENCE_TOKEN)"
+
+        # Try new space-scoped mining first
+        if spaces:
+            try:
+                from src.confluence_domain_miner import ConfluenceDomainMiner
+                miner = ConfluenceDomainMiner(confluence_service=self._confluence)
+                pages = miner.mine(spaces=spaces, query_terms=query_terms)
+                if pages:
+                    from src.confluence_service import build_confluence_context
+                    context = build_confluence_context(pages, budget=12000)
+                    user = f"# Confluence Documentation ({len(pages)} pages)\n\n{context}"
+                    return self._llm_call(
+                        "Phase 2v2", _CONFLUENCE_MINING_SYSTEM, user,
+                        fallback="# Confluence Rules\n(unavailable)"
+                    )
+                logger.warning("Phase 2 (v2): 0 pages from spaces %s — falling back to keyword search", spaces)
+            except Exception as exc:
+                logger.warning("Phase 2 (v2): space mining failed: %s — falling back", exc)
+
+        # Fallback: original keyword search
+        return self._mine_confluence(query_terms)
+
+    def _mine_jira_v2(
+        self,
+        jira_project: str,
+        issue_types: Optional[list[str]],
+        max_tickets: int,
+        since_days: int,
+    ) -> str:
+        """Phase 3 (v2) — broad Jira mining using JiraDomainMiner."""
+        logger.info("Phase 3 (v2): mining Jira project=%s", jira_project or "(none)")
+
+        if not jira_project:
+            return "# Jira Patterns\n(No Jira project key provided — pass --jira-project)"
+
+        try:
+            from src.jira_domain_miner import JiraDomainMiner
+            miner = JiraDomainMiner()
+            out_path = self._output_dir / "jira_patterns.md"
+            miner.mine_and_write(
+                project=jira_project,
+                issue_types=issue_types,
+                max_tickets=max_tickets,
+                since_days=since_days,
+                output_path=out_path,
+            )
+            if out_path.exists():
+                return out_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            logger.warning("Phase 3 (v2): JiraDomainMiner failed: %s — falling back", exc)
+
+        # Fallback: original implementation
+        return self._mine_jira(jira_project)
 
     # ------------------------------------------------------------------
     # Phase 6 — Repo signals (local scan or JSON)

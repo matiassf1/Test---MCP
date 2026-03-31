@@ -70,6 +70,52 @@ def _sentences(text: str) -> list[str]:
 class JiraInvariantExtractor:
     """Extract porting signals and domain constraints from Jira ticket descriptions."""
 
+    def extract_batch(self, tickets: list[dict]) -> list[JiraInvariantContext]:
+        """Extract invariants from a list of ticket dicts (each with a 'description' key).
+
+        Returns one ``JiraInvariantContext`` per ticket; empty contexts for tickets
+        with missing/empty descriptions. Never raises on individual ticket failures.
+        """
+        results: list[JiraInvariantContext] = []
+        for ticket in tickets:
+            try:
+                desc = ticket.get("description") or ""
+                results.append(self.extract(desc))
+            except Exception:
+                results.append(JiraInvariantContext())
+        return results
+
+    @staticmethod
+    def merge_batch(contexts: list[JiraInvariantContext]) -> JiraInvariantContext:
+        """Merge a list of ``JiraInvariantContext`` objects into a single deduplicated context.
+
+        Deduplicates domain_constraints by value and porting_signals by phrase+context.
+        Returns an empty ``JiraInvariantContext`` for an empty list.
+        """
+        if not contexts:
+            return JiraInvariantContext()
+
+        seen_constraints: set[str] = set()
+        seen_porting: set[str] = set()
+        merged_constraints: list[str] = []
+        merged_signals: list[PortingSignal] = []
+
+        for ctx in contexts:
+            for constraint in ctx.domain_constraints:
+                if constraint not in seen_constraints:
+                    seen_constraints.add(constraint)
+                    merged_constraints.append(constraint)
+            for signal in ctx.porting_signals:
+                key = signal.phrase + "|" + signal.context_sentence[:60]
+                if key not in seen_porting:
+                    seen_porting.add(key)
+                    merged_signals.append(signal)
+
+        return JiraInvariantContext(
+            porting_signals=merged_signals,
+            domain_constraints=merged_constraints,
+        )
+
     def extract(self, description: Optional[str]) -> JiraInvariantContext:
         if not description or not description.strip():
             return JiraInvariantContext()

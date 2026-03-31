@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import Optional
 
 from src.config import settings
 from src.models import JiraIssue
+
+logger = logging.getLogger(__name__)
 
 # Jira ticket pattern, e.g. PAY-212, PROJ-1234
 _TICKET_PATTERN = re.compile(r"\b([A-Z]+-\d+)\b")
@@ -235,6 +238,52 @@ class JiraService:
         if not self._client:
             return ""
         return self._client.fetch_epic_context_markdown(issue_key)
+
+    def search_project_tickets(
+        self,
+        project: str,
+        issue_types: Optional[list[str]] = None,
+        max_tickets: int = 100,
+        since_days: int = 180,
+    ) -> list[dict]:
+        """Return recent tickets from a Jira project across multiple issue types.
+
+        Broader than ``fetch_epic_issues`` — queries the whole project for domain mining.
+        Returns list of dicts: {"key", "summary", "description", "issuetype", "url"}.
+        Returns [] when Jira is not available.
+        """
+        if not self._client or not self._client._raw:
+            return []
+
+        types = issue_types or ["Story", "Task", "Bug", "Incident", "Epic"]
+        types_jql = ", ".join(f'"{t}"' for t in types)
+        jql = (
+            f'project = "{project}" '
+            f'AND issuetype in ({types_jql}) '
+            f'AND updated >= -{since_days}d '
+            f'ORDER BY updated DESC'
+        )
+
+        try:
+            raw_issues = self._client._raw.search_issues(jql, maxResults=max_tickets)
+        except Exception as exc:
+            logger.warning("JiraService.search_project_tickets: search failed: %s", exc)
+            return []
+
+        jira_base = (settings.jira_url or "").rstrip("/")
+        results: list[dict] = []
+        for issue in raw_issues:
+            fields = issue.fields
+            desc = _normalize_description(getattr(fields, "description", None), max_len=2000)
+            itype = getattr(getattr(fields, "issuetype", None), "name", None) or ""
+            results.append({
+                "key": issue.key,
+                "summary": getattr(fields, "summary", "") or "",
+                "description": desc or "",
+                "issuetype": itype,
+                "url": f"{jira_base}/browse/{issue.key}",
+            })
+        return results
 
     def fetch_epic_issues(self, epic_key: str) -> list[JiraIssue]:
         """Return all child issues (Stories, Tasks, Bugs, etc.) under an Epic.

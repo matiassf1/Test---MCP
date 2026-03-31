@@ -56,11 +56,17 @@ class ConfluenceService:
 
     Gracefully disabled when credentials are absent — all methods return
     empty results without raising exceptions.
+
+    Authentication:
+        Atlassian Cloud API tokens require HTTP Basic auth (email:token).
+        Pass ``username`` (your Atlassian email) to enable Basic auth.
+        When ``username`` is absent, falls back to Bearer token (for PAT / Data Center).
     """
 
-    def __init__(self, base_url: str = "", token: str = "") -> None:
+    def __init__(self, base_url: str = "", token: str = "", username: str = "") -> None:
         self._base_url = base_url.rstrip("/")
         self._token = token
+        self._username = username
         self._enabled = bool(base_url and token)
         if not self._enabled:
             logger.debug("ConfluenceService: credentials absent — fetching disabled")
@@ -177,6 +183,111 @@ class ConfluenceService:
                 continue
         return pages
 
+    def search_by_space(
+        self,
+        space_key: str,
+        query_terms: list[str],
+        max_results: int = 20,
+    ) -> list[ConfluencePage]:
+        """Search a Confluence space using CQL full-text queries.
+
+        Issues: ``space = "<key>" AND (text ~ "t1" OR text ~ "t2") AND type = page``
+        Returns up to ``max_results`` pages. Gracefully returns [] when disabled or on 404.
+        """
+        if not self._enabled:
+            logger.debug("ConfluenceService.search_by_space: disabled (no credentials)")
+            return []
+
+        if not query_terms:
+            return []
+
+        cql_terms = " OR ".join(f'text ~ "{t}"' for t in query_terms[:5])
+        cql = f'space = "{space_key}" AND ({cql_terms}) AND type = page'
+
+        try:
+            resp = requests.get(
+                f"{self._base_url}/rest/api/content/search",
+                params={"cql": cql, "limit": max_results, "expand": "body.storage"},
+                headers=self._headers(),
+                timeout=15,
+            )
+            if resp.status_code == 404:
+                logger.warning("ConfluenceService: space %r not found (404)", space_key)
+                return []
+            if resp.status_code != 200:
+                logger.warning(
+                    "ConfluenceService.search_by_space: non-200 for space %r: %d",
+                    space_key, resp.status_code,
+                )
+                return []
+            results = resp.json().get("results", [])
+        except Exception as exc:
+            logger.warning("ConfluenceService.search_by_space failed for space %r: %s", space_key, exc)
+            return []
+
+        pages: list[ConfluencePage] = []
+        for item in results[:max_results]:
+            try:
+                page_id = str(item["id"])
+                title = item.get("title", f"Page {page_id}")
+                html = (item.get("body") or {}).get("storage", {}).get("value", "")
+                content = _strip_html(html)
+                if content:
+                    pages.append(ConfluencePage(page_id=page_id, title=title, content=content))
+            except Exception:
+                continue
+        return pages
+
+    def search_by_label(
+        self,
+        label: str,
+        max_results: int = 10,
+    ) -> list[ConfluencePage]:
+        """Return all pages tagged with the given Confluence label.
+
+        Issues: ``label = "<label>" AND type = page``
+        Gracefully returns [] when disabled or label not found.
+        """
+        if not self._enabled:
+            logger.debug("ConfluenceService.search_by_label: disabled (no credentials)")
+            return []
+
+        cql = f'label = "{label}" AND type = page'
+
+        try:
+            resp = requests.get(
+                f"{self._base_url}/rest/api/content/search",
+                params={"cql": cql, "limit": max_results, "expand": "body.storage"},
+                headers=self._headers(),
+                timeout=15,
+            )
+            if resp.status_code == 404:
+                logger.warning("ConfluenceService: label %r not found (404)", label)
+                return []
+            if resp.status_code != 200:
+                logger.warning(
+                    "ConfluenceService.search_by_label: non-200 for label %r: %d",
+                    label, resp.status_code,
+                )
+                return []
+            results = resp.json().get("results", [])
+        except Exception as exc:
+            logger.warning("ConfluenceService.search_by_label failed for label %r: %s", label, exc)
+            return []
+
+        pages: list[ConfluencePage] = []
+        for item in results[:max_results]:
+            try:
+                page_id = str(item["id"])
+                title = item.get("title", f"Page {page_id}")
+                html = (item.get("body") or {}).get("storage", {}).get("value", "")
+                content = _strip_html(html)
+                if content:
+                    pages.append(ConfluencePage(page_id=page_id, title=title, content=content))
+            except Exception:
+                continue
+        return pages
+
     def get_page_content(self, page_id: str) -> Optional[ConfluencePage]:
         """Fetch and return a Confluence page as plain text, or None on failure."""
         if not self._enabled:
@@ -208,8 +319,14 @@ class ConfluenceService:
     # ------------------------------------------------------------------
 
     def _headers(self) -> dict[str, str]:
+        if self._username:
+            import base64
+            creds = base64.b64encode(f"{self._username}:{self._token}".encode()).decode()
+            auth = f"Basic {creds}"
+        else:
+            auth = f"Bearer {self._token}"
         return {
-            "Authorization": f"Bearer {self._token}",
+            "Authorization": auth,
             "Accept": "application/json",
         }
 

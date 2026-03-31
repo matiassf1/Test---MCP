@@ -793,6 +793,97 @@ def cmd_build_domain_context(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_refresh_domain(args: argparse.Namespace) -> int:
+    """One-shot domain layer refresh — mines Confluence, Jira, optionally features flags, then enriches domain_context.md."""
+    from pathlib import Path
+
+    from src.config import settings
+    from src.domain_knowledge_pipeline import DomainKnowledgePipeline
+
+    repo: str = args.repo
+    jira_project: str = getattr(args, "jira_project", "CLOSE") or "CLOSE"
+    since_days: int = getattr(args, "since_days", 180)
+    max_tickets: int = getattr(args, "max_tickets", 100)
+    enrich: bool = getattr(args, "enrich", True)
+    extract_flags: bool = getattr(args, "extract_flags", False)
+    build_repo_index: bool = getattr(args, "build_repo_index", False)
+    force_refresh: bool = getattr(args, "force_refresh", False)
+    repos_file: str = getattr(args, "repos_file", "domain_knowledge/repo_priority_index.yaml") or ""
+
+    # Resolve confluence spaces
+    spaces_raw = (getattr(args, "confluence_spaces", "") or "").strip()
+    if not spaces_raw:
+        spaces_raw = (getattr(settings, "confluence_spaces", "") or "ENG,CLOSE").strip()
+    confluence_spaces = [s.strip() for s in spaces_raw.split(",") if s.strip()]
+
+    console.rule("[bold blue]Domain Layer Refresh[/bold blue]")
+    console.print(f"Repo: [bold]{repo}[/bold]")
+    console.print(f"Jira project: [bold]{jira_project}[/bold]  since: {since_days}d  max: {max_tickets} tickets")
+    console.print(f"Confluence spaces: {', '.join(confluence_spaces) or '(none)'}")
+    console.print(f"Repos file: {repos_file}")
+    console.print(f"Enrich: {enrich}  Extract flags: {extract_flags}  Build repo index: {build_repo_index}")
+
+    summary: dict = {
+        "files_written": [],
+        "pages_mined": 0,
+        "tickets_mined": 0,
+        "flags_extracted": 0,
+        "sections_enriched": 0,
+    }
+
+    # Optional: build repo index first
+    if build_repo_index:
+        with console.status("Building repo priority index…"):
+            try:
+                from scripts.build_repo_index import build_repo_index as _build_idx
+                idx_path = _build_idx(max_repos=50, output_path=Path(repos_file))
+                summary["files_written"].append(str(idx_path))
+                console.print(f"[green]✓[/green] Repo index: {idx_path}")
+            except Exception as exc:
+                console.print(f"[yellow]⚠ build_repo_index failed:[/yellow] {exc}")
+
+    pipeline = DomainKnowledgePipeline()
+
+    try:
+        with console.status("Running domain knowledge pipeline…"):
+            output_path = pipeline.build(
+                repo=repo,
+                jira_project=jira_project,
+                confluence_spaces=confluence_spaces,
+                max_jira_tickets=max_tickets,
+                since_days=since_days,
+                force_refresh=force_refresh,
+                repos_file=repos_file if Path(repos_file).exists() else None,
+                enrich=enrich,
+                extract_feature_flags=extract_flags,
+            )
+        summary["files_written"].append(str(output_path))
+    except RuntimeError as exc:
+        console.print(f"[red]Pipeline error:[/red] {exc}")
+        return 1
+    except Exception as exc:
+        console.print(f"[red]Unexpected error:[/red] {exc}")
+        return 1
+
+    # Collect stats from written artifacts
+    dk_dir = Path(settings.domain_knowledge_dir)
+    for artifact_name, stat_key in [
+        ("confluence_rules.md", "pages_mined"),
+        ("jira_patterns.md", "tickets_mined"),
+        ("feature_flags.md", "flags_extracted"),
+    ]:
+        p = dk_dir / artifact_name
+        if p.exists():
+            summary["files_written"].append(str(p))
+
+    console.print(f"\n[green]✓[/green] Domain context written → [bold]{output_path}[/bold]")
+    console.print("\n[bold]Summary:[/bold]")
+    for f in summary["files_written"]:
+        console.print(f"  - {f}")
+
+    return 0
+
+
 def cmd_generate_workflow_docs(args: argparse.Namespace) -> int:
     """Generate a single Markdown doc of core workflows (Jira Epics), ordered by priority."""
     from pathlib import Path
@@ -1259,6 +1350,73 @@ def build_parser() -> argparse.ArgumentParser:
         help="Precomputed repo_signals.json (from scan_repo_signals); appends §10 without re-scanning",
     )
 
+    # refresh_domain
+    p_rd = sub.add_parser(
+        "refresh_domain",
+        help="One-shot domain layer refresh: builds repo index, mines Confluence + Jira, extracts flags, enriches domain_context.md",
+    )
+    p_rd.add_argument("--repo", required=True, help="Primary GitHub repo to mine (e.g. FloQastInc/close)")
+    p_rd.add_argument(
+        "--jira-project",
+        default="CLOSE",
+        dest="jira_project",
+        help="Jira project to mine (default: CLOSE)",
+    )
+    p_rd.add_argument(
+        "--confluence-spaces",
+        default="",
+        dest="confluence_spaces",
+        help="Comma-separated Confluence space keys (default: from CONFLUENCE_SPACES env)",
+    )
+    p_rd.add_argument(
+        "--repos-file",
+        default="domain_knowledge/repo_priority_index.yaml",
+        dest="repos_file",
+        help="Path to repo_priority_index.yaml (default: domain_knowledge/repo_priority_index.yaml)",
+    )
+    p_rd.add_argument(
+        "--since-days",
+        type=int,
+        default=180,
+        dest="since_days",
+        help="Mining window for Jira tickets in days (default: 180)",
+    )
+    p_rd.add_argument(
+        "--max-tickets",
+        type=int,
+        default=100,
+        dest="max_tickets",
+        help="Max Jira tickets to fetch (default: 100)",
+    )
+    p_rd.add_argument(
+        "--no-enrich",
+        action="store_false",
+        default=True,
+        dest="enrich",
+        help="Skip domain_context.md enrichment step",
+    )
+    p_rd.add_argument(
+        "--extract-flags",
+        action="store_true",
+        default=False,
+        dest="extract_flags",
+        help="Run feature flag extraction from priority repos (slower)",
+    )
+    p_rd.add_argument(
+        "--build-repo-index",
+        action="store_true",
+        default=False,
+        dest="build_repo_index",
+        help="Run build_repo_index.py before the pipeline (requires org access)",
+    )
+    p_rd.add_argument(
+        "--force-refresh",
+        action="store_true",
+        default=False,
+        dest="force_refresh",
+        help="Re-run all phases even if cached files exist",
+    )
+
     # generate_summary
     p_summary = sub.add_parser("generate_summary", help="Generate aggregated team summary")
     repo_group = p_summary.add_mutually_exclusive_group(required=True)
@@ -1304,6 +1462,8 @@ def main() -> int:
         return cmd_scan_repo_signals(args)
     elif args.command == "build_domain_context":
         return cmd_build_domain_context(args)
+    elif args.command == "refresh_domain":
+        return cmd_refresh_domain(args)
     elif args.command == "generate_summary":
         return cmd_generate_summary(args)
 

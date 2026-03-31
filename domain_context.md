@@ -1,306 +1,283 @@
 # DOMAIN CONTEXT
 
-## 0. INITIATIVES & FLAGS (quick reference)
-
-| Shorthand | Name | Epic | Feature flag |
-|-----------|------|------|--------------|
-| **SIL** | **Single Item Lock** | **CLOSE-9949** | `close_locking_single-item-lock` |
-| **SSO** (context) | **Separate Strict Sign-Off** (not enterprise SSO) | **CLOSE-8615** | `close_entity-settings_separate-strict-sign-off` |
-
----
-
 ## 1. SYSTEM OVERVIEW
 
-### apps/JEM-migrations  
-- Responsibility: Manage database schema and data migrations impacting journal entries and financial close cycles.
-
-### apps/adhoc-projects_api  
-- Responsibility: API backend for adhoc project CRUD with authorization, feature flag checks, and data validation.
-
-### apps/ai-matching-migrations  
-- Responsibility: Migrations for AI-driven matching features and account settings updates.
-
-### apps/apollo_email-event-trigger  
-- Responsibility: Trigger transactional emails via third-party services based on event workflows.
-
-### apps/autorec-amortization-migrations  
-- Responsibility: Migration scripts for amortization and auto-recurring accounting schema/data changes.
-
-### apps/autorec-amortization_main  
-- Responsibility: Core amortization and auto-recurring accounting domain logic, APIs, authorization, and helpers.
-
-### Shared Utilities (implicit)  
-- Responsibility: Common helpers for feature flags, HTTP, and storage across modules.
+### Modules
+- apps/JEM-migrations
+  - Responsibility: Backend database schema and data migrations focused on journal entry accounting domain with state updates tied to signoffs.
+- apps/adhoc-projects_api
+  - Responsibility: API service managing ad-hoc project lifecycle, with strong authorization and feature flag driven logic.
+- apps/ai-matching-migrations
+  - Responsibility: Database migrations for AI-specific account settings and deduplication in matching domain.
+- apps/apollo_email-event-trigger
+  - Responsibility: Handles inbound email event processing via Mandrill, SES, SNS integrations, separate from core business workflows.
+- apps/autorec-amortization-migrations
+  - Responsibility: Schema and data migrations specific to auto-reconciliation and amortization financial modules.
+- apps/autorec-amortization_main
+  - Responsibility: Core business logic for financial auto-reconciliation, amortization processing, configuration, and journal entry handling.
 
 ---
 
 ## 2. DOMAIN INVARIANTS (CRITICAL RULES)
 
-### Authorization model invariants (account / entity / compliance)
+### Checklist Signoff and Workflow Integrity:
+- Signoffs must be applied sequentially: Preparers first, Reviewers only after Preparers complete.
+- Only authorized roles may create or remove signoffs; no cross-role overrides except Admin/Manager.
+- Signoff removal permissions strictly enforced: prep and reviewer remove own; admins override.
+- Signed checklist items lock editing until signoff removal.
+- Signoff creation/removal requests must be idempotent with appropriate HTTP verb usage.
+- Feature flags governing migrations must preserve signoff state integrity regardless of deployment route (Lambda or ECS).
 
-- A user’s effective permissions are determined by the combination of **account_role**, **entity_role**, and **compliance_program_role** (when applicable).
-- **Permissions MUST NOT** be derived from **UI state alone**.
-- **Authorization decisions MUST NOT** rely **only** on **feature flags** (flags may gate features but must not replace role resolution).
-- **Sign-off authorization MUST** always respect: **assigned user**, **role permissions**, and **strict sign-off mode** when enabled.
-- When **strict sign-off** mode is enabled: users **MUST NOT** sign off items **assigned to others**; **bulk sign-off** may be restricted.
-- **Auditor** users **MUST** have **read-only** or **restricted** access and **MUST NOT** perform state mutations (**signoff**, **edits**, **deletes**).
+### Replication Workflow Guarantees:
+- Replication batches enforced exactly-once via Step Functions; idempotent and ordered.
+- Monthly scheduled triggers maintain chronological replication order.
+- Folder/template/checklist creation order preserved for data consistency.
+- Undo operations permitted, updating replication states without data corruption.
+- Concurrency controls prevent duplicate or overlapping data processing during replication.
 
-### Signoff + locking invariants
-
-- **Locked** items or folders **MUST NOT** allow **signoff** state mutation.
-- **UI restrictions MUST** be **backed by backend enforcement** (disabling controls alone is insufficient).
-- **Signoff** state transitions **MUST**: preserve **ordering** (e.g. **preparer** before **reviewer** when strict) and be recorded in **immutable history**.
-
-### Single Item Lock / **SIL** (Epic **CLOSE-9949**) — product / data model
-
-- **Team shorthand: SIL** = **Single Item Lock** = this epic.
-- **Feature flag:** `close_locking_single-item-lock` (distinct from strict sign-off epic **CLOSE-8615** / `close_entity-settings_separate-strict-sign-off`).
-- **Entity-level setting** (companies schema / `companySettings`): policy enum persisted as **`SingleItemLock`** (or equivalent path), values include at least **`LOCK_ALL`**, **`LOCK_DOCS`**, **`DISABLED`**.
-- **Semantics:**
-  - **`LOCK_ALL`:** restrict **sign-offs**, **editing**, and **documents** for locked items (full lock UX).
-  - **`LOCK_DOCS`:** restrict **modifying documents** only — **not** the same as LOCK_ALL (distinction is **critical** for checklist/table UI).
-  - **`DISABLED`:** company turns off single-item lock at the policy control level.
-- **Frontend gating (current AC — Kelly / team):** **Sign-offs** and **slideout** are locked **only when both:** (1) the **single-item lock feature flag** is **enabled**, and (2) the company has **`LOCK_ALL`** selected (**not** `LOCK_DOCS`, **not** `DISABLED`).
-- **One policy for manual + auto lock:** The **Single Item Lock** setting (**`LOCK_DOCS` / `LOCK_ALL` / `DISABLED`**) drives **both** (a) **manual** item lock (e.g. dropdown in UI) **and** (b) **auto lock** on **signature completion**. There is **not** a separate granular company toggle “only auto lock” vs “only manual” — same enum semantics for both paths.
-- **V1 vs V2 on company settings (naming — align code review):**
-  - **V1:** **`isSingleTaskAutoLockEnabled`** (legacy auto-lock flag / “old” gate).
-  - **V2:** **`singleItemLockEnabled`** + **`SingleItemLock`** enum (**`LOCK_ALL`**, **`LOCK_DOCS`**, **`DISABLED`**).
-  - Do **not** treat V2 as merely “V1 renamed”; V2 is the **policy model** for both manual and auto lock behavior once shipped.
-- **Code hygiene:** Internal unlock state naming may use **`SIL_UNLOCKED`** (or successor names) after refactors — keep **grep** and constants aligned with PRs (e.g. CLOSE-12509 area).
-- **Ship blocker / review heuristic:** Avoid an **early return** in the **V2** code path that runs **only when V1 is enabled** (or bails when V1 is disabled). That pattern “worked during dev” but **fails** after ship when: a **new entity** has **V1 off** and **V2 on**, or **V1 is deprecated** but the early return remains — users would **always** hit the short-circuit and never get V2 behavior. **Prefer independent V2 checks** (flag + `singleItemLockEnabled` + enum) per product AC.
-- **Product nuance (policy changes):** If the company sets **`DISABLED`**, the stored enum may **overwrite** the prior value — UX/product want **items already locked** to **retain** effective behavior (**LOCK_ALL** vs **LOCK_DOCS**) rather than retroactively unlocking or guessing wrong. Ideal: **persist lock behavior at time of locking**; if not feasible, fallback is a **single default** for “locked under unknown policy” or keep unlocked — align with PM/engineering.
-- **Planned / WIP data shape (dev sync):** Add **`singleItemLockEnabled: boolean`** alongside **`singleItemLock: string`** (enum). Together they express “company has feature off” **without** losing the last enum for **item-level** checks. Example patterns:
-  - Company-wide **strict gating:** `singleItemLockEnabled && singleItemLock === 'LOCK_ALL'` (for FE behaviors tied to company toggle).
-  - **Item lock UX / unlock:** may need to rely on **per-item lock metadata** and/or **`singleItemLock`** even when `singleItemLockEnabled` is false — **blast radius TBD** (do not assume one client-only check).
-- **Unlock in kebab (open question):** When **`DISABLED`** but item **still locked**, whether **Unlock Item** appears — product to confirm; implementation must match AC once decided.
-- **Backend / services (blast radius notes):** `companies_schema`, **companies_service**, **company-settings-client**; evaluate **checklist-service**, **reconciliations_core-service**, **checklist_lambdas**, **reconciliations_lambdas** for item lock reads/writes vs new fields.
-
-### Feature flag invariants
-
-- Feature flags **MUST** be evaluated at **runtime** and have **safe defaults** (off unless explicitly enabled).
-- Feature flags **MUST NOT** **bypass authorization logic** or introduce **alternative permission paths**.
-- Behavior behind flags **MUST** be **consistent across modules** (e.g. **checklist-client** vs **recs-client**).
-
-### Operational invariants (APIs, migrations, data)
-
-- **Authorization:** Every API call must verify user authorization via validated middleware before accessing or modifying any resource; authorization logic must be consistent across modules.
-- **State / signoff:** Journal entry and financial close status transitions must follow allowed sequences; signoff and reconciliation histories are immutable; state rollback must be based on recorded signoff history.
-- **Feature flags:** No test-only or temporary flags may remain active in production without explicit governance.
-- **Data integrity:** Requests must be validated to prevent duplication and invalid formats; middleware must block invalid data before business logic.
-
-### Close UI — checklist signoff (keyword anchor for diffs)
-
-- Changing `isAuthorizedForSignoff`, `signoffAuthorization`, `signaturePermission`, `strictSignoff`, or `getEffectiveStrictFlags` in **checklist-client** must never weaken preparer-before-reviewer ordering or skip feature-flag checks for `close_entity-settings_separate-strict-sign-off` when that flag gates strict behavior.
-- `authorization.js` and `signoffs.js` in **ui/checklist-client** must always keep signoff authorization consistent with immutable signoff history rules; must never silently bypass `canSign` or `authorizationManager` expectations in production paths.
+### Export Workflow Safeguards:
+- Exports trigger asynchronous jobs for Excel generation and S3 upload; synchronous waits forbidden.
+- Notifications dispatched via WebSocket/email only after export completion and upload.
+- Only one active export per user/entity at a time; later requests either queued or prior exports cancelled.
+- Audit logs and events emitted for every export request, progress, and completion.
 
 ---
 
 ## 3. ROLE MODEL
 
-### Account roles (formal model)
+### Checklist Domain
+- Preparer
+  - Can: create/remove own signoffs; edit checklist pre-signoff.
+  - Cannot: override Reviewer signoffs or edit locked items.
+- Reviewer
+  - Can: create/remove own signoffs only after Preparer signoff; review progress.
+  - Cannot: signoff before Prep; override Admin removals.
+- Admin/Manager
+  - Can: override any signoff restrictions; remove any signoff; access audit trails.
+- Client User
+  - Can: read-only checklist and status views.
+  - Cannot: create or remove signoffs; edit checklists.
 
-- **Admin**, **Manager**, **Advanced User**, **Ops User**, **Sys Admin**, **Auditor** (and similar labels in product copy).
+### Replication Domain
+- Replication Worker
+  - Can: execute replication pipeline steps with scoped collection access.
+- Replication Manager
+  - Can: initiate replication batches; monitor processing queues.
+- Reviewer
+  - Can: validate and approve replication completions.
+- System Roles (Automated Lambdas/Services)
+  - Can: operate on specific DB collections and storage per least privilege.
 
-### Role hierarchy expectations
-
-- **Admin / Sys Admin:** full configuration and permission control.
-- **Manager:** operational control, limited admin capabilities.
-- **Advanced User:** standard execution + limited modification.
-- **Ops User:** restricted operational capabilities.
-- **Auditor:** read-only or restricted access; must not mutate protected state.
-
-### Entity-level roles
-
-- A user may have **different roles per entity**; **entity_role** overrides **account_role** behavior **within that entity**.
-- **Critical rule:** permission checks **MUST** resolve **account_role** + **entity_role** + **context** (**module**: Checklist, Reconciliation, etc.).
-
-### Compliance program role
-
-- Where applicable, **compliance_program_role** constrains effective permissions together with account and entity roles.
-
-### Application-specific roles (modules in this repo)
-
-- Project User (adhoc-projects_api)  
-  - Can: perform CRUD operations on projects permitted by assigned authorization.  
-  - Cannot: bypass authorization or validation checks.  
-  - Special behavior: Subject to frequent ACL validations on every action.  
-  - Risk: Authorization and validation coverage often incomplete in edge cases.
-
-- Accounting Manager (autorec-amortization_main)  
-  - Can: Manage amortization schedules, trigger reconciliations, advance signoff states per rules.  
-  - Cannot: Alter signoff history or perform invalid state transitions.  
-  - Special behavior: State transitions are audited and must be consistent with domain invariants.  
-  - Risk: High risk if state mutation logic is inconsistent or bypassed.
-
-- System Administrator / Migration Operator  
-  - Can: Execute database and domain migrations on behalf of system.  
-  - Cannot: Violate data integrity or signoff constraints via migration scripts.  
-  - Special behavior: Responsible for coordinating migrations preserving cross-domain consistency.  
-  - Risk: Migration duplication and uncoordinated changes cause corruption.
+### Export Domain
+- Export Requester
+  - Can: trigger export jobs; only one active per entity.
+- Export Processor
+  - Can: asynchronously generate and upload export files.
+- Export Notifier
+  - Can: notify users post-export completion with results.
 
 ---
 
 ## 4. FEATURE FLAGS
 
-- adhoc_projects_new_ui  
-  - Controls: Whether new UI and API middleware logic for adhoc projects is enabled.  
-  - Risk: Partial rollouts cause inconsistent user experiences and possible permission bypass.
-
-- autorec_amortization_enhancements  
-  - Controls: Activate new amortization calculation logic and signoff workflows.  
-  - Risk: Incomplete flag check could allow mixing old and new state management causing reconciliation errors.
-
-- email_event_trigger_sns_integration  
-  - Controls: Whether SNS events trigger email sends in apollo_email-event-trigger.  
-  - Risk: Misconfigured flags cause email spam or suppression.
-
-- **close_locking_single-item-lock** (Epic **CLOSE-9949** — Single Item Lock)  
-  - Controls: Single-item **lock** UX (sign-off / slideout / docs per **LOCK_ALL** vs **LOCK_DOCS** policy).  
-  - **Must** be combined with entity **`LOCK_ALL`** (per current FE AC) for full sign-off + slideout lock — not `LOCK_DOCS` or `DISABLED` alone.  
-  - Risk: Flag ON but policy misread → inconsistent lock vs **CLOSE-8615** strict sign-off; cross-client drift on **`SingleItemLock`** enum.
+- MigrationSignoffConsistency
+  - Controls: Enables enforced signoff state preservation during migrations on both Lambda and ECS routes.
+  - Risk: Partial implementation leads to signoff state mismatches causing checklist inconsistencies.
+- AdhocProjectAuthToggle
+  - Controls: Toggles enhanced authorization middleware in adhoc-projects_api.
+  - Risk: Partial coverage risks unauthorized operations or blocked valid users.
+- AI_Matching_Dedupe_Enable
+  - Controls: Enables AI-domain access state deduplication in migrations.
+  - Risk: Disabled or partial flag results in data duplication or loss during AI matching sync.
 
 ---
 
 ## 5. CROSS-MODULE DIFFERENCES (CRITICAL)
 
-### checklist-client vs recs-client (Close UI)
-
-- **checklist-client** (`ui/checklist-client`, `AssigneeSignature`, `ChecklistRow`): must never use **isWorkflow** guards or **workflow**-conditional signoff; **strict** preparer reviewer ordering must always apply; **featureFlag** changes must not copy **recs-client** relaxed paths.
-- **recs-client** (`ui/recs-client`): may use **isWorkflow** and relaxed signoff ordering in some flows.
-- 🚨 **Anti-pattern:** **import** or **require** from **recs-client** into **checklist-client** for **signoff**, **authorization**, **isAuthorizedForSignoff**, or **strictSignoff** logic — duplicate code with **recs** patterns in **checklist-client** files triggers cross-module review.
-
-### Cross-module authorization (formal)
-
-- **checklist-client** and **recs-client** **MUST NOT** share authorization logic via **copy/paste** or **diverge** in permission enforcement.
-- Authorization logic **SHOULD** be **centralized** or shared via **common utilities**.
-- **Feature flag** behavior **MUST** be **consistent** across **checklist-client** and **recs-client**.
-- **UI** behavior **MUST NOT** **diverge** from **backend** enforcement for the same user/role/entity.
-
-### Single Item Lock — cross-surface parity (CLOSE-9949)
-
-- **`LOCK_ALL`** vs **`LOCK_DOCS`** must be interpreted **identically** in **table UI**, **slideout**, and **services** that enforce item lock (checklist vs reconciliations paths).
-- **Company settings** payload (**GET/PATCH** companies_service / settings client) must stay in sync with what **checklist-service** / **reconciliations_core** / **lambdas** use for lock decisions once **`singleItemLockEnabled`** ships.
-- Do not conflate **strict sign-off** settings (**CLOSE-8615**) with **single-item lock** policy (**CLOSE-9949**); PRs may touch both — differentiate in review.
-
----
-
-- apps/autorec-amortization-main vs apps/autorec-amortization-migrations:  
-  - autorec-amortization-main: Implements runtime amortization logic, API, and state enforcement.  
-  - autorec-amortization-migrations: Only defines data and schema migrations, no runtime logic or API.  
-
-- apps/JEM-migrations vs apps/ai-matching-migrations:  
-  - JEM-migrations: Manages migration of journal entries and close process states.  
-  - ai-matching-migrations: Focuses on AI matching data migrations unrelated to journal entry state.
-
-⚠️ Never assume logic or state transitions defined in ai-matching-migrations apply to journal entry states managed by JEM-migrations.
-
-- apps/adhoc-projects_api vs apps/autorec-amortization-main:  
-  - adhoc-projects_api: Focus on API, authorization, and project lifecycle with feature flags and validation middleware.  
-  - autorec-amortization-main: Account management logic with strict signoff state enforcement and reconciliation processes.
-
-⚠️ Authorization and validation mechanisms differ in domain concepts; rules from one module don't implicitly apply to the other.
+- apps/JEM-migrations vs apps/autorec-amortization-migrations:
+  - JEM-migrations: Focus on journal entry accounting data and signoff states; complex post-signoff state updates included.
+  - autorec-amortization-migrations: Centered on amortization and autorec configurations; no signoff state logic applied.
+- apps/adhoc-projects_api vs apps/ai-matching-migrations:
+  - adhoc-projects_api: Strong authorization middleware and dynamic feature flag handling.
+  - ai-matching-migrations: Stateless migrations focused on deduplication and AI-specific data transformations; no user session or auth.
+- apps/autorec-amortization_main vs apps/apollo_email-event-trigger:
+  - autorec-amortization_main: Contains financial business logic and workflow.
+  - apollo_email-event-trigger: Pure integration module receiving and parsing inbound email events; no internal business workflows.
+- ⚠️ apps/adhoc-projects_api vs apps/autorec-amortization_main:
+  - adhoc-projects_api uses API-layer middleware for authorization and feature flags.
+  - autorec-amortization_main enforces domain invariants in business logic internally.
+  - Never replicate adhoc-projects_api authorization logic inside autorec-amortization_main or vice versa.
 
 ---
 
 ## 6. KNOWN FAILURE PATTERNS
 
-### Pattern: Authorization bypass via UI
-- **Description:** UI disables actions but **backend** still allows them.
-- **Root cause:** Authorization implemented **only** in **frontend**.
-- **Impact:** Users bypass restrictions via **API** or **stale clients**.
+### Pattern: Long-Running UI Blocking APIs
+- Description: Synchronous API endpoints performing lengthy processing block frontend UI.
+- Root cause: Absence of async job architecture; direct synchronous processing on HTTP layer.
+- Impact: Frontend freezes, degraded user experience, potential data entry stalls.
+- Example: Background upload endpoints blocked UI before migration to async job queues (CLOSE-12749).
 
-### Pattern: Feature flag authorization drift
-- **Description:** A **feature flag** changes behavior **inconsistently** across modules.
-- **Root cause:** Flag evaluated **differently** in **checklist-client** vs **recs-client** (or other clients).
-- **Impact:** Inconsistent **permission enforcement**; audit/compliance risk.
+### Pattern: Incorrect Transaction State Transitions
+- Description: Journal and accounting transactions enter inconsistent states due to implicit or incorrect transition logic.
+- Root cause: Missing explicit idempotent event-driven state updates; conflated UI and backend state assumptions.
+- Impact: UI displays mismatch, stale reports, inconsistent accounting entries.
+- Example: JE posted flag set without proper status update causing stale data in user reports (CLOSE-13442).
 
-### Pattern: Cross-module authorization inconsistency
-- **Description:** Same permission logic implemented **differently** in **checklist-client** and **recs-client**.
-- **Root cause:** Lack of **shared authorization** layer.
-- **Impact:** **Divergent behavior**; audit and compliance issues.
+### Pattern: AI Sync Infinite Loops
+- Description: AI sync triggers recursively fire without termination condition leading to stuck journal entries and system hangs.
+- Root cause: Lack of re-entry flags to detect and prevent repeated AI sync invocations.
+- Impact: System resource exhaustion, blocked workflows, incomplete data sync.
+- Example: Journal entries stuck in pending AI sync status due to recursive AI matching calls.
 
-### Pattern: Signoff state corruption
-- **Description:** **Signoff** **order** or **permissions** violated.
-- **Root cause:** Missing enforcement of **strict signoff** mode and **role-based sequencing**.
-- **Impact:** Invalid **close** process; **audit failure**.
+### Pattern: Signoff State Divergence During Migration
+- Description: Signoff states diverge between Lambda-based and ECS-based migration routes.
+- Root cause: Partial feature flag rollout and inconsistent state update logic during migration.
+- Impact: Checklist items show incorrect lock states; audit discrepancies.
+- Example: Checklist item remained editable post-preparer signoff after incomplete MigrationSignoffConsistency flag deployment.
 
-### Pattern: Auditor privilege escalation
-- **Description:** **Auditor** can **mutate** state (**signoff**, **edit**, **delete**).
-- **Root cause:** Missing **role restriction** checks on server and/or client.
-- **Impact:** **Compliance violation**.
-
-### Pattern: Single Item Lock — LOCK_ALL vs LOCK_DOCS confused or overwritten
-- **Description:** UI or API treats **`LOCK_DOCS`** like **`LOCK_ALL`** (locks sign-off/slideout incorrectly), or switching company setting to **`DISABLED`** **unlocks** items that should **retain** prior **LOCK_ALL**/**LOCK_DOCS** behavior.
-- **Root cause:** Single field **`singleItemLock`** overwritten with **`DISABLED`** with **no** per-item snapshot / no **`singleItemLockEnabled`** companion; FE checks **flag** without **policy** or **policy** without **flag**.
-- **Impact:** Wrong table row state, documents editable when they should not be (or vice versa), audit narrative inconsistent with actual lock.
-- **Keywords:** `SingleItemLock`, `singleItemLockEnabled`, `LOCK_ALL`, `LOCK_DOCS`, `close_locking_single-item-lock`, **kebab** unlock.
-
-### Pattern: SIL V2 blocked by V1-disabled early return
-- **Description:** **V2** Single Item Lock path returns early when **`isSingleTaskAutoLockEnabled`** (V1) is **false**, assuming V1/V2 were mapped as mutually dependent.
-- **Root cause:** Transitional dev assumption; V1 and V2 are **not** the same toggle — entities may ship with **V1 off** and **V2 on**, or **V1** may be **removed** later.
-- **Impact:** Auto/manual lock under **LOCK_ALL** / **LOCK_DOCS** never runs; silent regression after rollout or deprecation.
-- **Keywords:** `isSingleTaskAutoLockEnabled`, `singleItemLockEnabled`, **V2** path, early return.
-
-### Pattern: recs-client logic ported into checklist-client
-- Description: **isWorkflow** guards, **recs-client** **import**, relaxed **signoff** **ordering**, **isAuthorizedForSignoff** copied from **recs** into **checklist-client** **authorization.js** **signoffAuthorization.js**.
-- Root cause: **checklist-client** treated like **recs-client**; **strictSignoff** and **preparer** **reviewer** rules violated.
-- Impact: Wrong **signaturePermission**, **audit** signoff, **CLOSE** checklist compliance failure.
-- Example: **`from 'recs-client`** in **checklist-client** or new **!isWorkflow** in **AssigneeSignature** paths.
-
-### Pattern: Duplicated Authorization Logic  
-- Description: Authorization checks implemented multiple times independently across modules.  
-- Root cause: Lack of centralized authorization helper libraries or shared middleware.  
-- Impact: Divergent rule enforcement creating permission leaks or erroneous denials.  
-- Example: adhoc-projects_api and autorec-amortization-main validate user rights differently, causing synchronized access issues.
-
-### Pattern: Migration Duplication and Coordination Failures  
-- Description: Similar migration scripts repeated independently in multiple modules without coordination.  
-- Root cause: Each domain migration manages similar state transitions separately.  
-- Impact: Data and state inconsistencies during upgrade/downgrade, with risk of broken reconciliation or close cycles.  
-- Example: JEM-migrations and autorec-amortization-migrations applying overlapping state changes causing signoff history mismatches.
-
-### Pattern: Feature Flag Leakage  
-- Description: Test or temporary feature flags remain active in production.  
-- Root cause: Lack of automated cleanup and environment isolation for flags.  
-- Impact: Partial feature rollout causes unpredictable behavior and security bypass.  
-- Example: adhoc_projects_new_ui flag left enabled in prod causing incomplete authorization checks.
-
-### Pattern: Validation Gaps Leading to Duplicates  
-- Description: Missing or incomplete data validation enabling duplicate project or amortization entries.  
-- Root cause: Validation logic residing only in some API layers without enforcement in all entry points.  
-- Impact: Data corruption, confusion in reconciliation, audit failures.  
-- Example: adhoc-projects_api allowing duplicate project names due to missing middleware checks.
-
-### Pattern: State Transition Inconsistencies  
-- Description: Signoff or journal entry states updated out-of-order or lacking recorded history.  
-- Root cause: Failure to enforce migration-driven invariant sequences.  
-- Impact: Corrupted reconciliation state, irreversible financial close errors.  
-- Example: autorec-amortization-main allowing premature reconciliation advance without prior signoff recorded.
+### Pattern: Replication Batch Overlap and Data Corruption
+- Description: Overlapping replication batch processing causes data collisions and corrupted checklist/template state.
+- Root cause: Missing or faulty concurrency controls and locking in Step Function workflows.
+- Impact: Checklist data inconsistent; replication rollbacks needed.
+- Example: Duplicate folder creation from concurrent replication triggered by close scheduling error.
 
 ---
 
+<!-- BEGIN MINED -->
+<!-- mined duplicate: Long-Running UI Blocking APIs suppressed -->
+<!-- mined duplicate: Incorrect Transaction State Transitions suppressed -->
+### Pattern: AI Sync Loop and Partial Failure Handling
+- **Description**: AI matching and sync-triggered JE creation cause infinite loops or partial failures are not handled gracefully, resulting in stuck processes or incomplete journal entries.
+- **Root cause**: Assumption that triggering sync processes will not recursively invoke themselves, and that partial failures can be ignored or cause total abort.
+- **Impact**: System stability risks with infinite loops, inaccurate JE creation, and unclear failure statuses.
+- **Example**: CLOSE-13438 prevents infinite sync loops by flagging re-syncs; CLOSE-13436 implements partial failure handling allowing continuation and failure reason tracking.
+
+---
+### Pattern: Inconsistent AI Suggestion Lifecycle
+- **Description**: AI-generated rule suggestions are not properly persisted, dismissed, accepted, or rerendered, leading to poor UX and data inconsistencies.
+- **Root cause**: Assumption that UI dismiss/accept actions automatically persist backend state and that stale suggestions won't resurface.
+- **Impact**: Users see suggestions that should be hidden, or lose dismissed/accepted state; confusion and inefficiency.
+- **Example**: CLOSE-13432 and CLOSE-13425 implemented persistent dismiss/accept APIs and UI hiding logic.
+
+---
+### Pattern: Feature Flag Cleanup and Management Oversights
+- **Description**: Legacy or deprecated feature flags remain active or code paths behind flags are not cleaned, causing unnecessary complexity and potential bugs.
+- **Root cause**: Assumption that feature flags, once transitioned, will be cleaned up promptly.
+- **Impact**: Codebase complexity, maintenance burden, risk of accidentally toggling old functionality.
+- **Example**: CLOSE-11710 deprecated autoAccrual flag and CLOSE-11894, CLOSE-14083 cleaned Q4 feature flag code.
+
+---
+### Pattern: Large Embedded Document Size Limits Ignored
+- **Description**: Large embedded arrays in MongoDB collections cause exceeding document size limits (16MB), leading to errors and degraded system behavior.
+- **Root cause**: Assumption that embedding large arrays inside single documents is sustainable at scale.
+- **Impact**: DB errors, performance degradation, migration complexity.
+- **Example**: CLOSE-14081 through CLOSE-14080 and others migrate embedded arrays (procedures and reconciliations) out of templates collection into linked collections via a feature-flagged new template DAL.
+
+---
+### Pattern: Backend Assumptions of Default or "Primary" Sides
+- **Description**: Backend processes incorrectly assume balance or source sides in journal entries, causing inaccurate balances or misplaced references.
+- **Root cause**: Assumption that the GL is always the primary side and some fixed assignment logic.
+- **Impact**: Data export errors, incorrect financial data representation.
+- **Example**: CLOSE-13705 updated functions to use explicit isGLSource field rather than fixed side assumptions.
+
+---
+### Pattern: UI Dropdown Filtering Mismatch
+- **Description**: UI filtering behavior for large dropdown selection lists returns limited static options rather than dynamic results based on user input, frustrating users.
+- **Root cause**: Assumption that static result sets suffice instead of dynamic, input-driven queries.
+- **Impact**: User unable to find desired options beyond initial fixed subset.
+- **Example**: CLOSE-14037 enhanced Workday JE line-level currency search to return user-input driven filtered options.
+
+---
+### Pattern: Conflict Handling Missing in Rule Management
+- **Description**: When saving or running rules, conflicting active rules are not properly handled, leading to silent failures or overwrites.
+- **Root cause**: Assumption that users either don’t create conflicting rules or backend silently resolves conflicts.
+- **Impact**: Confusing UI, lost rule changes, inconsistent rule behavior.
+- **Example**: CLOSE-12974 added conflict resolution UI when saving rules to set priority and prevent silent conflicts.
+
+---
+### Pattern: Missing or Incorrect Condition Logic Evaluation
+- **Description**: Condition evaluation logic for rules (e.g., OR vs AND, exact match) is incorrect, resulting in errors or incorrect rule matches.
+- **Root cause**: Assumption that condition logic implementations are correctly interpreted from specifications or input.
+- **Impact**: Rule test failures, errors during evaluation, wrong results for users.
+- **Example**: CLOSE-14066 fixed condition logic for OR selection and exact matches in JE Rules Phase 1.
+
+---
+### Pattern: Data Integrity Bugs in UI Due to Frontend Logic Errors
+- **Description**: Frontend bugs cause data inconsistencies or incorrect states to be presented or stored in UI settings.
+- **Root cause**: Assumption that small UI logic details do not affect data integrity.
+- **Impact**: Incorrect checklist settings, lost user changes, support incidents.
+- **Example**: CLOSE-14048 uncovered frontend bugs during Colonial Group investigation that led to incorrect Checklist Settings.
+
+---
+
+This set of failure patterns helps reviewers focus on domain assumptions about asynchronous processing, transactional state management, feature flag hygiene, data storage sizing, user input filtering, and proper handling of AI-generated suggestions and rule conflicts.
+
+## Sources
+- [CLOSE-13649: [Close Item Details] - Updates to Rolled Forward UI/UX](https://floqast.atlassian.net/browse/CLOSE-13649) (type: Story)
+- [CLOSE-12487: [M7.1] Create Manual Export Endpoint](https://floqast.atlassian.net/browse/CLOSE-12487) (type: Story)
+- [CLOSE-12749: Update upload chart of accounts to use POST /template/jobs for background COA upload](https://floqast.atlassian.net/browse/CLOSE-12749) (type: Story)
+- [CLOSE-13440: [JE Rules Phase 2] Sync execution status — surface in rule failures UI](https://floqast.atlassian.net/browse/CLOSE-13440) (type: Story)
+- [CLOSE-13442: [JE Rules Phase 2] Transaction state — move to Matched after JE posted](https://floqast.atlassian.net/browse/CLOSE-13442) (type: Story)
+- [CLOSE-13430: [JE Rules Phase 2] Preview impact — transaction list view](https://floqast.atlassian.net/browse/CLOSE-13430) (type: Story)
+- [CLOSE-13429: [JE Rules Phase 2] Impact calculation — display count in suggestion card](https://floqast.atlassian.net/browse/CLOSE-13429) (type: Story)
+- [CLOSE-13432: [JE Rules Phase 2] Dismiss suggestion — persist & hide](https://floqast.atlassian.net/browse/CLOSE-13432) (type: Story)
+- [CLOSE-13431: [JE Rules Phase 2] Accept suggestion — convert to pre-filled draft rule](https://floqast.atlassian.net/browse/CLOSE-13431) (type: Story)
+- [CLOSE-13439: [JE Rules Phase 2] Sync execution logging](https://floqast.atlassian.net/browse/CLOSE-13439) (type: Story)
+- [CLOSE-13436: [JE Rules Phase 2] Sync-triggered JE creation — partial failure handling](https://floqast.atlassian.net/browse/CLOSE-13436) (type: Story)
+- [CLOSE-13441: [JE Rules Phase 2] Transaction state — move to Pending after JE created](https://floqast.atlassian.net/browse/CLOSE-13441) (type: Story)
+- [CLOSE-13437: [JE Rules Phase 2] Re-sync — trigger second AI Matching sync after JE creation](https://floqast.atlassian.net/browse/CLOSE-13437) (type: Story)
+- [CLOSE-13428: [JE Rules Phase 2] Impact calculation — backend count of matching DS2 transactions](https://floqast.atlassian.net/browse/CLOSE-13428) (type: Story)
+- [CLOSE-13427: [JE Rules Phase 2] Suggested rules section — render suggestion cards](https://floqast.atlassian.net/browse/CLOSE-13427) (type: Story)
+- [CLOSE-13426: [JE Rules Phase 2] Suggested rules section — UI shell in JE Rules modal](https://floqast.atlassian.net/browse/CLOSE-13426) (type: Story)
+- [CLOSE-13435: [JE Rules Phase 2] Sync-triggered JE creation — call JEM API](https://floqast.atlassian.net/browse/CLOSE-13435) (type: Story)
+- [CLOSE-13438: [JE Rules Phase 2] Re-sync — loop prevention](https://floqast.atlassian.net/browse/CLOSE-13438) (type: Story)
+- [CLOSE-13434: [JE Rules Phase 2] Sync hook — execute rules in priority order](https://floqast.atlassian.net/browse/CLOSE-13434) (type: Story)
+- [CLOSE-13425: [JE Rules Phase 2] Suggestion API — accept & dismiss endpoints](https://floqast.atlassian.net/browse/CLOSE-13425) (type: Story)
+- [CLOSE-13424: [JE Rules Phase 2] Suggestion API — list & read endpoints](https://floqast.atlassian.net/browse/CLOSE-13424) (type: Story)
+- [CLOSE-13433: [JE Rules Phase 2] Sync hook — identify active rules for synced GL account + legal entity](https://floqast.atlassian.net/browse/CLOSE-13433) (type: Story)
+- [CLOSE-14048: [Colonial Group Follow up] Checklist Settings template data integrity ](https://floqast.atlassian.net/browse/CLOSE-14048) (type: Story)
+- [CLOSE-12917: [IAC Migration | Frontend] Update Consumers for POST /completeness/build](https://floqast.atlassian.net/browse/CLOSE-12917) (type: Story)
+- [CLOSE-13639: [Schema] Add glSourceNumber to account settings schema](https://floqast.atlassian.net/browse/CLOSE-13639) (type: Story)
+- [CLOSE-14037: Support Workday line-level currency searching options with user input](https://floqast.atlassian.net/browse/CLOSE-14037) (type: Story)
+- [CLOSE-11894: Clean up Q4 feature flag(s) - Checklist Settings](https://floqast.atlassian.net/browse/CLOSE-11894) (type: Story)
+- [CLOSE-13705: [Python, API] Use isGLSource to resolve GL balance ](https://floqast.atlassian.net/browse/CLOSE-13705) (type: Story)
+- [CLOSE-13415: [JE Rules Phase 2] Historical transaction query — data access layer](https://floqast.atlassian.net/browse/CLOSE-13415) (type: Story)
+- [CLOSE-13659: [API] Pass matchSetId during JE creation](https://floqast.atlassian.net/browse/CLOSE-13659) (type: Story)
+- [CLOSE-13814: Add new singleItemLockEnabled field to companySettings | fq-schemas](https://floqast.atlassian.net/browse/CLOSE-13814) (type: Story)
+- [CLOSE-14084: Add SFTP E2E Export tests to Deployment Configs](https://floqast.atlassian.net/browse/CLOSE-14084) (type: Task)
+- [CLOSE-12773: [1] Create updateLockStatus middleware in recs_service](https://floqast.atlassian.net/browse/CLOSE-12773) (type: Story)
+- [CLOSE-13087: Update Onboarding Docs](https://floqast.atlassian.net/browse/CLOSE-13087) (type: Task)
+- [CLOSE-14083: [checklist-client] Clean up Q4 feature flagged code](https://floqast.atlassian.net/browse/CLOSE-14083) (type: Story)
+- [CLOSE-12555: [2] Allow user to manually unlock a Reconciliation | recs-client](https://floqast.atlassian.net/browse/CLOSE-12555) (type: Story)
+- [CLOSE-12974: Save + run and conflict handling U6](https://floqast.atlassian.net/browse/CLOSE-12974) (type: Story)
+- [CLOSE-14066: [JE Rules Phase 1]: Fix conditions for test rules](https://floqast.atlassian.net/browse/CLOSE-14066) (type: Story)
+- [CLOSE-11710: Deprecate and remove autoAccrual feature flag](https://floqast.atlassian.net/browse/CLOSE-11710) (type: Story)
+- [CLOSE-13815: Update companies_service contract with singleItemLockEnabled | companies_service](https://floqast.atlassian.net/browse/CLOSE-13815) (type: Story)
+- [CLOSE-13991: Fix Invalid Date on dashboard](https://floqast.atlassian.net/browse/CLOSE-13991) (type: Story)
+- [CLOSE-14082: Regression test bulk-edit-templates_lambda after template-dal migration](https://floqast.atlassian.net/browse/CLOSE-14082) (type: Story)
+- [CLOSE-14081: Migrate platform/companies_delete template collection access to template-dal](https://floqast.atlassian.net/browse/CLOSE-14081) (type: Story)
+- [CLOSE-13822: [UI] Add multi-assign rules modal](https://floqast.atlassian.net/browse/CLOSE-13822) (type: Story)
+- [CLOSE-14080: Migrate close/remind_recommendations template collection access to template-dal](https://floqast.atlassian.net/browse/CLOSE-14080) (type: Story)
+- [CLOSE-14079: Migrate platform/super_company template collection access to template-dal](https://floqast.atlassian.net/browse/CLOSE-14079) (type: Story)
+- [CLOSE-14078: Migrate close/item_add-follower template collection access to template-dal](https://floqast.atlassian.net/browse/CLOSE-14078) (type: Story)
+- [CLOSE-14077: Migrate integrations-monorepo/folders_api template collection access to template-dal](https://floqast.atlassian.net/browse/CLOSE-14077) (type: Story)
+- [CLOSE-14076: Migrate close/bulk-edit-wrap-up template collection access to template-dal](https://floqast.atlassian.net/browse/CLOSE-14076) (type: Story)
+- [CLOSE-14068: fq-schemas: Add independent ProcedureTemplate and RecTemplate top-level schemas](https://floqast.atlassian.net/browse/CLOSE-14068) (type: Story)
+<!-- END MINED -->
 ## 7. REVIEW HEURISTICS (HOW TO THINK)
-
-### Heuristic interpretation rule (reduce false positives)
-
-- **UI-only** changes (rendering, **disabling controls**, labels, **toggle** visibility) **SHOULD NOT** alone be treated as **invariant violations** **UNLESS** they: **remove** an existing **restriction**, **contradict** **backend** enforcement, or **change** **authorization** / **signoff** **API** contracts.
-- Prefer asking: did the diff change **guards**, **API** calls, **permission checks**, or **ordering** — not only component props or CSS.
 
 When analyzing a PR:
 
-- Check if logic:  
-  - Enforces authorization consistently across all entry points.  
-  - Obeys the defined state transition sequences for signoffs and journal entries.
-
-- Always verify:  
-  - Feature flags are fully checked before enabling associated behavior, and flags are disabled in prod if test only.  
-  - Validation middleware prevents duplicates and malformed requests before reaching domain logic.
-
-- Be suspicious of:  
-  - New authorization implementations that duplicate existing logic without reuse.  
-  - Migration scripts touching overlapping domain states without coordination.  
-  - Feature flag usage that omits runtime condition checks or environment restrictions.
-  - PRs that mix **strict sign-off** (**CLOSE-8615** / `close_entity-settings_separate-strict-sign-off`) with **single-item lock** (**CLOSE-9949** / `close_locking_single-item-lock`) without clear separation of **`strictSignOff`** vs **`SingleItemLock`** / **`singleItemLockEnabled`**.
+- Check if logic:
+  - Respects strict signoff ordering and role-based creation/removal permissions.
+  - Avoids synchronous blocking calls in API layers for long-running processes (prefer async jobs).
+- Always verify:
+  - Feature flags fully implemented and toggled consistently across all deployment routes.
+  - Export workflows enforce single-active-export and notify only upon completion.
+- Be suspicious of:
+  - Replication logic lacking concurrency control or idempotency guarantees.
+  - AI sync or matching code invoking recursive triggers without safeguards.
 
 ---
 
@@ -308,25 +285,29 @@ When analyzing a PR:
 
 Focus extra scrutiny on:
 
-- Signoff and reconciliation state mutation functions in autorec-amortization-main.  
-- Authorization middleware implementations in adhoc-projects_api and amortization modules.  
-- Migration scripts in apps/JEM-migrations and apps/autorec-amortization-migrations for overlapping domain state changes.  
-- Feature flag definitions and runtime guards in adhoc-projects_api and autorec-amortization-main.  
-- Data validation layers enforcing uniqueness and format in project and amortization APIs.
-- **Single Item Lock** (**CLOSE-9949**): companies schema/settings API, **company-settings-client**, checklist vs recs **slideout** and **table** lock behavior; **`LOCK_ALL`** vs **`LOCK_DOCS`** vs policy-to-**DISABLED** transitions; any new **`singleItemLockEnabled`** field rollout.
+- apps/JEM-migrations/signoff-state-update handlers
+- apps/adhoc-projects_api authorization middleware and feature flag branching
+- apps/ai-matching-migrations deduplication and sync re-entry logic
+- apps/autorec-amortization_main journal entry creation and state transitions
+- apps/apollo_email-event-trigger inbound email event parsing and notification triggers
+- apps/autorec-amortization-migrations migration scripts with financial config changes
 
 ---
 
 ## 9. CONFIDENCE GUIDELINES
 
-Raise risk level if:  
-- Authorization logic is independently reimplemented without adequate test coverage or peer review.  
-- Migrations affecting the same domain state (e.g., signoff) are uncoordinated or duplicated across modules.  
-- Feature flags control critical logic but lack runtime checks or have unclear production status.
+Raise risk level if:
 
-Lower risk if:  
-- Authorization and validation logic uses shared/reusable middleware or helpers with tests.  
-- Migrations are coordinated via shared documentation or override mechanisms ensuring consistent state transitions.  
-- Feature flags have explicit environment gating and automated cleanup processes.
+- Feature flag toggles are incomplete or split between deployment routes without cross-validation.
+- PR introduces synchronous/blocking API calls in frontend-facing endpoints.
+- Replication or AI sync logic lacks explicit concurrency and re-entry protections.
+- Signoff permissions or workflows modified without enforcing strict sequential and role checks.
+
+Lower risk if:
+
+- Changes limited to isolated migration scripts with small scope and database-only side-effects.
+- Reusable domain logic verifies idempotency and uses existing audited method calls.
+- Feature flags are fully tested across Lambda and ECS deployments with consistent behavior.
+- Exports remain strictly asynchronous with proper notification and audit events emitted.
 
 ---

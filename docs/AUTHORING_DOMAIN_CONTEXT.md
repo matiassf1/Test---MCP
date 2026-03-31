@@ -46,6 +46,30 @@ When you run `build_domain_context` with **`--repo-path`** or **`--repo-signals-
 - Prefer to keep **authoritative** rules in §2–§6; treat §10 as **telemetry from the codebase**.
 - If a §10 pattern is important, **copy distilled wording** into §2 or §6 with your vocabulary so diffs match.
 
+## Machine-managed sections (guard blocks)
+
+Sections §4, §6, and §10 can be automatically enriched by `refresh_domain` using data mined from
+Confluence, Jira, and the repo priority index. The enricher uses guard markers to isolate
+auto-generated content:
+
+```
+<!-- BEGIN MINED -->
+<machine-generated content here>
+<!-- END MINED -->
+```
+
+**Rules:**
+- Content **outside** the guard block is manually authored and is **never touched** by the enricher.
+- Content **inside** the guard block is replaced on every `refresh_domain` run — do not hand-edit inside the markers.
+- To make a mined pattern permanent, copy it **above** the `<!-- BEGIN MINED -->` marker with your own wording.
+- Currently enriched sections: **§4 Feature Flags**, **§6 Known Failure Patterns**, **§10 Repo Priority Index**.
+
+To refresh:
+```bash
+python -m src.cli refresh_domain --repo FloQastInc/close --force-refresh
+# or schedule via cron: 0 9 * * 1 cd /path/to/tool && python -m src.cli refresh_domain --repo FloQastInc/close
+```
+
 ## Checklist before shipping a new `domain_context.md`
 
 1. Pick 2–3 recent risky PRs; grep their diffs for words you used in §2/§6.
