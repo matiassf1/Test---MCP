@@ -162,9 +162,9 @@ Solo listado de PRs merged del autor en la org; no ejecuta análisis.
 
 ---
 
-## 3b. `list_prs_by_jira_ticket(ticket_key, org, limit?)`
+## 3b. `list_prs_by_jira_ticket(ticket_key, org, limit?, merged_only?)`
 
-Lista PRs merged que mencionan el ticket de Jira (título, body o branch). No ejecuta análisis.
+Lista PRs que mencionan el ticket de Jira (título, body o branch). Por defecto incluye **abiertos y mergeados**; con `merged_only: true` solo mergeados. No ejecuta análisis.
 
 ### Ejemplo de respuesta
 
@@ -187,9 +187,9 @@ Lista PRs merged que mencionan el ticket de Jira (título, body o branch). No ej
 
 ---
 
-## 3c. `analyze_pr_by_jira_ticket(ticket_key, org, pr_index?)`
+## 3c. `analyze_pr_by_jira_ticket(ticket_key, org, pr_index?, merged_only?)`
 
-Busca PRs merged que mencionan el ticket, analiza el PR en la posición `pr_index` (0 = el más reciente) y devuelve métricas + reporte. No hace falta saber repo/número de PR.
+Busca PRs que mencionan el ticket (por defecto **abiertos y mergeados**), analiza el PR en la posición `pr_index` (0 = el más reciente) y devuelve métricas + reporte. Con `merged_only: true` solo busca mergeados. No hace falta saber repo/número de PR.
 
 ### Ejemplo de respuesta (éxito)
 
@@ -209,7 +209,7 @@ Busca PRs merged que mencionan el ticket, analiza el PR en la posición `pr_inde
 }
 ```
 
-En error: `{ "error": "...", "ticket": "..." }` o, si no hay PRs: `{ "error": "No merged PRs found for ticket X in org Y", "ticket": "X" }`.
+En error: `{ "error": "...", "ticket": "..." }` o, si no hay PRs: `{ "error": "No PRs found for ticket X in org Y", "ticket": "X" }` (o `No merged PRs found...` si `merged_only` es true).
 
 ---
 

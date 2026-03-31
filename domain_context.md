@@ -1,5 +1,14 @@
 # DOMAIN CONTEXT
 
+## 0. INITIATIVES & FLAGS (quick reference)
+
+| Shorthand | Name | Epic | Feature flag |
+|-----------|------|------|--------------|
+| **SIL** | **Single Item Lock** | **CLOSE-9949** | `close_locking_single-item-lock` |
+| **SSO** (context) | **Separate Strict Sign-Off** (not enterprise SSO) | **CLOSE-8615** | `close_entity-settings_separate-strict-sign-off` |
+
+---
+
 ## 1. SYSTEM OVERVIEW
 
 ### Modules
@@ -40,6 +49,16 @@
 - Notifications dispatched via WebSocket/email only after export completion and upload.
 - Only one active export per user/entity at a time; later requests either queued or prior exports cancelled.
 - Audit logs and events emitted for every export request, progress, and completion.
+
+### Single Item Lock / **SIL** (Epic **CLOSE-9949**) — product, BE, FE
+
+- **Feature flag:** `close_locking_single-item-lock` (distinct from strict sign-off **CLOSE-8615**).
+- **Entity policy:** `SingleItemLock` enum at least **`LOCK_ALL`**, **`LOCK_DOCS`**, **`DISABLED`**. **`LOCK_ALL`:** sign-off + editing + documents restricted for locked items. **`LOCK_DOCS`:** documents only — **not** interchangeable with LOCK_ALL in checklist/table UX.
+- **FE gating (Kelly / team):** Sign-offs + slideout “full SIL” lock when **flag ON** and company has **`LOCK_ALL`** (not `LOCK_DOCS` / `DISABLED` alone) per current AC.
+- **CSP vs FQ (CLOSE-12554):** **Separate concerns.** FQ can lock an item without CSP. Coupling is *FQ lock + CSP enabled → also lock files in CSP* — not “CSP only ⇒ SIL UX”.
+- **Lock Item UI:** FF (dev) + SIL enabled for entity + **item complete**. **Unlock Item:** FF + **`item.lockStatus.isLocked`** (do **not** substitute **folder lock** for this visibility check) + admin/manager. **CLOSE-13891:** if `lockStatus` is wrong legacy semantics, fix BE/FF; FE still keys off `item.lockStatus` per AC.
+- **Same shape, different rule (CLOSE-13891 class):** `lockStatus.isLocked` can mean **document** scope under legacy (CSP / `singleTaskAutoLockEnabled`) vs **item** scope under SIL. **Lambdas** must not OR `itemLocked` without **SIL** **FF + policy**; **services** “safe” ≠ lambdas safe — **`ChecklistItemUtils.isLocked`** in **checklist_lambdas** affects **checklist + recs**.
+- **Performance Q4 + SIL (CLOSE-12523 class):** Flag **`CLOSE_PERFORMANCE_Q4_FEBRUARY`** (checklist-client). **`CompaniesAPI` `settingsQuery` / `includeFields`** whitelist must list **`singleItemLock`** / fields rows read or payload strips SIL. **`ChecklistTableV2` `React.memo` `areEqual`:** do not use **`companies?.length`** when **`companies`** is a **Redux object map** (`undefined === undefined` → no re-render); use **reference** compare. **recs-client:** may only react to **new** companies, not in-place company updates — parity risk.
 
 ---
 
@@ -89,6 +108,12 @@
 - AI_Matching_Dedupe_Enable
   - Controls: Enables AI-domain access state deduplication in migrations.
   - Risk: Disabled or partial flag results in data duplication or loss during AI matching sync.
+- **close_locking_single-item-lock** (SIL — **CLOSE-9949**)
+  - Controls: Single-item lock UX (sign-off / slideout / docs per **LOCK_ALL** vs **LOCK_DOCS**).
+  - Risk: Drift vs CLOSE-8615; incomplete company payload or memo → stale SIL UI.
+- **CLOSE_PERFORMANCE_Q4_FEBRUARY** (checklist performance — name in `checklist-client` constants)
+  - Controls: Memoization, reduced company fields via ECS whitelist, etc.
+  - Risk: With SIL — wrong memo compare or missing **`singleItemLock`** in whitelist → cog/slideout wrong until refresh.
 
 ---
 
@@ -107,6 +132,7 @@
   - adhoc-projects_api uses API-layer middleware for authorization and feature flags.
   - autorec-amortization_main enforces domain invariants in business logic internally.
   - Never replicate adhoc-projects_api authorization logic inside autorec-amortization_main or vice versa.
+- **SIL — checklist-client vs recs-client:** **`LOCK_ALL` / `LOCK_DOCS`** must match in **table**, **slideout**, and BE consumers. **Feature flag** evaluation must not diverge. Do not conflate **CLOSE-8615** strict sign-off with **CLOSE-9949** SIL policy.
 
 ---
 
@@ -141,6 +167,18 @@
 - Root cause: Missing or faulty concurrency controls and locking in Step Function workflows.
 - Impact: Checklist data inconsistent; replication rollbacks needed.
 - Example: Duplicate folder creation from concurrent replication triggered by close scheduling error.
+
+### Pattern: Item `lockStatus.isLocked` in shared helper without SIL gate (legacy / lambdas — CLOSE-13891)
+- Description: `folderLocked || itemLocked` from **`checklistItem.lockStatus`** shipped for all tenants; legacy meant **document** lock; SIL means **item** lock.
+- Root cause: Missed **FF** on **lambda** path; shape reuse ≠ one business rule. Fix example: **checklist_lambdas** PR **651** / **`ChecklistItemUtils.isLocked`**.
+- Impact: Defect **CLOSE-13891**: admin/sign-off flows break under legacy; **recs** may share util.
+- Mitigation: Gate **`itemLocked`** behind `close_locking_single-item-lock` + policy; test **lambdas** + FQ10.
+
+### Pattern: SIL UI broken by Q4 perf — whitelist + wrong `React.memo` (CLOSE-12523)
+- Description: **`CLOSE_PERFORMANCE_Q4_FEBRUARY`** ON: whitelist drops **`singleItemLock`**; or **`areEqual`** uses **`companies.length`** on object map → no re-render after company fetch / lock.
+- Root cause: Whitelist not updated for new settings; assumes **`companies`** is an array.
+- Impact: Settings **cog** / slideout wrong, intermittent until refresh; works with perf **OFF**.
+- Mitigation: Extend **`CompaniesAPI` / recs** `includeFields`; fix memo to **reference** compare; optional row guard until company hydrated.
 
 ---
 
@@ -291,6 +329,8 @@ Focus extra scrutiny on:
 - apps/autorec-amortization_main journal entry creation and state transitions
 - apps/apollo_email-event-trigger inbound email event parsing and notification triggers
 - apps/autorec-amortization-migrations migration scripts with financial config changes
+- **SIL (CLOSE-9949):** company settings schema/API, **checklist-client** / **recs-client** table + slideout; **`checklist_lambdas`** lock helpers + **FF** gates (**CLOSE-13891**).
+- **Q4 checklist perf + SIL:** **`ChecklistTableV2`** memo, **`CompaniesAPI.js`** `settingsQuery`, **recs** equivalents — test with **`CLOSE_PERFORMANCE_Q4_FEBRUARY`** **ON**.
 
 ---
 

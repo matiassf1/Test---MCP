@@ -13,7 +13,7 @@ python scripts/demo_author.py [AUTHOR] [ORG] [SINCE]
 |--------|-------------|--------|
 | **sync_repos.py** | Clone or pull (`--ff-only`) repos from YAML or `--repos` into `--root/<org>/<repo>`. | `python scripts/sync_repos.py --repos-file repos.local.yaml --root ~/src` |
 | **demo_pr.py** | Analyze a single PR (metrics + AI report + markdown). | `python scripts/demo_pr.py FloQastInc/close 5194` |
-| **demo_ticket.py** | Find a merged PR that mentions a Jira ticket and run full analysis. | `python scripts/demo_ticket.py CLOSE-13455 FloQastInc` |
+| **demo_ticket.py** | Find a PR (open or merged) that mentions a Jira ticket and run full analysis. | `python scripts/demo_ticket.py CLOSE-13455 FloQastInc` |
 | **demo_author.py** | Analyze all merged PRs by an author in the last N days (org-wide). | `python scripts/demo_author.py c-sachanocetto_floqast FloQastInc 15d` |
 
 ## Usage

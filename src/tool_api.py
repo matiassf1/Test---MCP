@@ -199,8 +199,12 @@ def list_prs_by_jira_ticket(
     ticket_key: str,
     org: str,
     limit: int = 20,
+    merged_only: bool = False,
 ) -> dict[str, Any]:
-    """List merged PRs that mention the given Jira ticket (title, body, or branch).
+    """List PRs that mention the given Jira ticket (title, body, or branch).
+
+    By default includes **open** and merged PRs. Pass ``merged_only=True`` to restrict
+    to merged PRs.
 
     Returns a dict with:
       - ``prs`` — list of {repo, pr} for each PR found
@@ -211,7 +215,9 @@ def list_prs_by_jira_ticket(
 
     try:
         gh = GitHubService()
-        pr_refs = gh.get_prs_mentioning_ticket(ticket_key=ticket_key, org=org, limit=limit)
+        pr_refs = gh.get_prs_mentioning_ticket(
+            ticket_key=ticket_key, org=org, limit=limit, merged_only=merged_only
+        )
         prs = [{"repo": repo, "pr": pr_number} for repo, pr_number in pr_refs]
         return {"ticket": ticket_key, "prs": prs, "total": len(prs)}
     except Exception as e:
@@ -317,7 +323,11 @@ def analyze_epic(
         for key in ticket_keys:
             try:
                 pairs = gh.get_prs_mentioning_ticket(
-                    key, repo=repo, org=org, limit=limit_per_ticket
+                    key,
+                    repo=repo,
+                    org=org,
+                    limit=limit_per_ticket,
+                    merged_only=True,
                 )
                 for (r, p) in pairs:
                     if (r, p) not in pr_set:

@@ -132,17 +132,22 @@ class GitHubService:
         repo: str = "",
         org: str = "",
         limit: int = 50,
+        merged_only: bool = False,
     ) -> list[tuple[str, int]]:
-        """Return (repo_full_name, pr_number) for merged PRs that mention *ticket_key*.
+        """Return (repo_full_name, pr_number) for PRs that mention *ticket_key*.
 
         Searches PR titles, bodies, and branch names via the GitHub Search API.
         Pass either ``repo`` (single repo) or ``org`` (entire org).
+
+        ``merged_only=True`` restricts to merged PRs (e.g. epic rollups). Default
+        ``False`` includes **open** and merged PRs for in-flight ticket work.
         """
         if not repo and not org:
             return []
         scope = f"repo:{repo}" if repo else f"org:{org}"
         # Quote ticket key so GitHub finds exact mention in title/body (e.g. CLOSE-13348)
-        query = f'{scope} type:pr is:merged "{ticket_key}"'
+        merged_q = " is:merged" if merged_only else ""
+        query = f'{scope} type:pr{merged_q} "{ticket_key}"'
         issues = self._client.search_issues(query, sort="updated", order="desc")
         results: list[tuple[str, int]] = []
         for issue in issues:

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Demo: find a merged PR that mentions a Jira ticket and run full analysis.
+Demo: find a PR (open or merged) that mentions a Jira ticket and run full analysis.
 Run from project root with venv activated:  python scripts/demo_ticket.py [TICKET] [ORG]
 Example:  python scripts/demo_ticket.py CLOSE-13455 FloQastInc
 """
@@ -30,7 +30,7 @@ def main() -> int:
     gh = GitHubService()
     pairs = gh.get_prs_mentioning_ticket(ticket, org=org, limit=1)
     if not pairs:
-        print(f"No merged PR found mentioning {ticket} in org {org}.")
+        print(f"No PR found mentioning {ticket} in org {org}.")
         return 1
     repo, pr = pairs[0]
     print(f"Found: {repo} PR #{pr}\n")

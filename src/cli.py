@@ -689,7 +689,9 @@ def _discover_epic_prs(
 
     for key in ticket_keys:
         try:
-            pairs = gh.get_prs_mentioning_ticket(key, repo=repo, org=org, limit=30)
+            pairs = gh.get_prs_mentioning_ticket(
+                key, repo=repo, org=org, limit=30, merged_only=True
+            )
             for pair in pairs:
                 if pair not in pr_set:
                     pr_set[pair] = key
