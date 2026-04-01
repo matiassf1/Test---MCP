@@ -1,0 +1,51 @@
+# Top repos for domain work (checklist, recs, schemas). Consumed by DomainContextEnricher → domain_context.md §10.
+- repo: FloQastInc/close
+  priority: P0
+  score: 100
+  rationale: Nx monorepo hosting reconciliations_core-*, checklist UI apps, jem_api, shared libs, and most Harness flag definitions.
+  domain_areas: [checklist, recs, jem, locking, sil]
+- repo: FloQastInc/checklist_lambdas
+  priority: P0
+  score: 92
+  rationale: Lambda path for checklist items; SIL lock middleware (`update-lock-status`) and shared sign-off flag keys — parity risk vs ECS.
+  domain_areas: [checklist, lambdas, sil, signoff]
+- repo: FloQastInc/checklist-service
+  priority: P0
+  score: 90
+  rationale: ECS checklist API; auth-module + fq-schemas; must stay aligned with checklist_lambdas for lock/signoff.
+  domain_areas: [checklist, ecs, auth]
+- repo: FloQastInc/reconciliations_service
+  priority: P0
+  score: 88
+  rationale: Recs core service; completeness, balance client migration flag, Workday module keys.
+  domain_areas: [recs, completeness, workday]
+- repo: FloQastInc/reconciliations_lambdas
+  priority: P0
+  score: 86
+  rationale: Recs lambdas; strict sign-off utils, XLSX export flags, lock/signoff behavior.
+  domain_areas: [recs, lambdas, signoff, export]
+- repo: FloQastInc/fq-schemas
+  priority: P1
+  score: 75
+  rationale: Shared Mongoose models consumed by services/lambdas — schema drift breaks checklist/recs contracts.
+  domain_areas: [schemas, platform]
+- repo: FloQastInc/fq-schemas-layer
+  priority: P1
+  score: 72
+  rationale: Layer packaging for fq-schemas in Lambda/deploy contexts.
+  domain_areas: [schemas, infra]
+- repo: FloQastInc/checklist-client
+  priority: P1
+  score: 70
+  rationale: Checklist MFE; SIL / strict sign-off / perf flags (`feature-flags.js`).
+  domain_areas: [checklist, fe, sil]
+- repo: FloQastInc/recs-client
+  priority: P1
+  score: 70
+  rationale: Recs MFE; SIL and strict sign-off must match checklist behavior.
+  domain_areas: [recs, fe, sil]
+- repo: FloQastInc/fq-consolidation-schemas
+  priority: P2
+  score: 55
+  rationale: Related schema package for consolidation flows.
+  domain_areas: [schemas, consolidation]
